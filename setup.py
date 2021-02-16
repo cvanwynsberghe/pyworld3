@@ -29,7 +29,7 @@ setup(
         "Topic :: Education",
         "Intended Audience :: Science/Research",
         "Intended Audience :: Education",
-        "OSI Approved :: CEA CNRS Inria Logiciel Libre License, version 2.1 (CeCILL-2.1)",
+        "License :: OSI Approved :: CEA CNRS Inria Logiciel Libre License, version 2.1 (CeCILL-2.1)"
     ],
 
     license="CeCILL",
