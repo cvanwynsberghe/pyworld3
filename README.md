@@ -81,7 +81,7 @@ want to modify:
 
 # Licence
 
-The project is under the CeCILL 2.1 licence, a GPL-like licence compatible with international and French laws. See the [terms](./LICENCE) for more details.
+The project is under the CeCILL 2.1 licence, a GPL-like licence compatible with international and French laws. See the [terms](./LICENSE) for more details.
 
 # References and acknowledgment
 
