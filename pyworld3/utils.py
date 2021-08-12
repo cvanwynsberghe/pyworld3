@@ -146,3 +146,4 @@ def plot_world_variables(time, var_data, var_names, var_lims,
         fig.suptitle(title, x=0.95, ha="right", fontsize=10)
 
     plt.tight_layout()
+    plt.show()
