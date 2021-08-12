@@ -396,7 +396,7 @@ def hello_world3():
 
     """
     from .utils import plot_world_variables
-    from matplotlib.pyplot import rcParams
+    from matplotlib.pyplot import rcParams, show
     params = {'lines.linewidth': '3'}
     rcParams.update(params)
 
@@ -415,6 +415,7 @@ def hello_world3():
                          figsize=(7, 5),
                          grid=1,
                          title="World3 standard run")
+    show()
 
 
 if __name__ == "__main__":
