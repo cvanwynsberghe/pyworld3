@@ -15,7 +15,7 @@ setup(
 
     author="Charles Vanwynsberghe",
     url='http://github.com/cvanwynsberghe/pyworld3',
-    download_url="https://github.com/cvanwynsberghe/pyworld3/archive/v1.0.tar.gz",
+    download_url="https://github.com/cvanwynsberghe/pyworld3/archive/v1.1.tar.gz",
 
     install_requires=["numpy", "scipy", "matplotlib"],
 
