@@ -7,6 +7,7 @@
 + [Install & Hello World3](#Install-and-Hello-World3)
 + [How to tune your own simulation](#How-to-tune-your-own-simulation)
 + [Licence](#Licence)
++ [How to cite PyWorld3 with Bibtex](#How-to-cite-PyWorld3-with-Bibtex)
 + [References & acknowledgment](#References-and-acknowledgment)
 
 ---
@@ -82,6 +83,22 @@ want to modify:
 # Licence
 
 The project is under the CeCILL 2.1 licence, a GPL-like licence compatible with international and French laws. See the [terms](./LICENSE) for more details.
+
+# How to cite PyWorld3 with Bibtex
+
+To cite the project in your paper via BibTex:
+```
+@softwareversion{vanwynsberghe:hal-03414394v1,
+  TITLE = {{PyWorld3 - The World3 model revisited in Python}},
+  AUTHOR = {Vanwynsberghe, Charles},
+  URL = {https://hal.archives-ouvertes.fr/hal-03414394},
+  YEAR = {2021},
+  MONTH = Nov,
+  SWHID = {swh:1:dir:9d4ad7aec99385fa4d5057dece7a989d8892d866;origin=https://hal.archives-ouvertes.fr/hal-03414394;visit=swh:1:snp:be7d9ffa2c1be6920d774d1f193e49ada725ea5e;anchor=swh:1:rev:da5e3732d9d832734232d88ea33af99ab8987d52;path=/},
+  LICENSE = {CeCILL Free Software License Agreement v2.1},
+  HAL_ID = {hal-03414394},
+}
+```
 
 # References and acknowledgment
 
