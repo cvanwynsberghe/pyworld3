@@ -27,21 +27,33 @@ and Nonrenewable Resource.
 
 # Install and Hello World3
 
-Install pyworld3 either via:
-```
+### Quick Install
+
+```bash
 pip install pyworld3
 ```
 
-or by cloning the repository, installing the requirements ``numpy``, ``scipy``
-and ``matplotlib`` and do:
+### From Source
 
+```bash
+git clone https://github.com/cvanwynsberghe/pyworld3.git
+cd pyworld3
+pip install .
 ```
-python setup.py install
+
+### Development
+
+```bash
+git clone https://github.com/cvanwynsberghe/pyworld3.git
+cd pyworld3
+pip install -e .[dev]
 ```
+
+### Hello World3
 
 Run the provided example to simulate the standard run, known as the *Business
 as usual* scenario:
-``` Python
+```python
 import pyworld3
 pyworld3.hello_world3()
 ```
