@@ -7,3 +7,11 @@ dist/
 
 # pdf files
 *.pdf
+
+# Virtual environments
+.venv/
+venv/
+
+# Build artifacts
+*.egg-info/
+uv.lock
