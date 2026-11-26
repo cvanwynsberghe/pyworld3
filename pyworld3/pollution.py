@@ -363,7 +363,9 @@ class Pollution:
 
     def loop0_pollution(self, alone=False):
         """
-        Run a sequence to initialize the pollution sector (loop with k=0).
+        Set the initial conditions of the sector at k=0; the
+        _update_* methods are then run by run_init_loops in the
+        k=0 execution order generated from the @step graph.
 
         Parameters
         ----------
@@ -373,18 +375,8 @@ class Pollution:
 
         """
         self.ppol[0] = self.ppoli
-        self._update_ppolx(0)
         if alone:
             self.loop0_exogenous()  # EXOGENOUS HERE
-        self._update_ppgio(0)
-        self._update_ppgao(0)
-        self._update_ppgf(0)
-        self._update_ppgr(0, 0)
-        self._update_pptd(0)
-        self._update_ppapr(0, 0)
-        self._update_ahlm(0)
-        self._update_ahl(0)
-        self._update_ppasr(0, 0)
 
     def run_pollution(self):
         """

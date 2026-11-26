@@ -369,7 +369,9 @@ class Capital:
 
     def loop0_capital(self, alone=False):
         """
-        Run a sequence to initialize the capital sector (loop with k=0).
+        Set the initial conditions of the sector at k=0; the
+        _update_* methods are then run by run_init_loops in the
+        k=0 execution order generated from the @step graph.
 
         Parameters
         ----------
@@ -384,38 +386,6 @@ class Capital:
         self.ic[0] = self.ici
         self.sc[0] = self.sci
         self.cuf[0] = 1.
-        # industrial subsector
-        self._update_alic(0)
-        self._update_icdr(0, 0)
-        self._update_icor(0)
-        self._update_io(0)
-        self._update_iopc(0)
-        self._update_fioac(0)
-        # service subsector
-        self._update_isopc(0)
-        self._update_alsc(0)
-        self._update_scdr(0, 0)
-        self._update_scor(0)
-        self._update_so(0)
-        self._update_sopc(0)
-        self._update_fioas(0)
-        self._update_scir(0, 0)
-        # back to industrial sector
-        self._update_fioai(0)
-        self._update_icir(0, 0)
-        # back to job subsector
-        self._update_jpicu(0)
-        self._update_pjis(0)
-        self._update_jpscu(0)
-        self._update_pjss(0)
-        self._update_jph(0)
-        self._update_pjas(0)
-        self._update_j(0)
-        self._update_lf(0)
-        self._update_luf(0)
-        self._update_lufd(0)
-        # recompute supplementary initial conditions
-        self._update_cuf(0)
 
     def run_capital(self):
         """

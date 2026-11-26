@@ -453,7 +453,9 @@ class Agriculture:
 
     def loop0_agriculture(self, alone=False):
         """
-        Run a sequence to initialize the population sector (loop with k=0).
+        Set the initial conditions of the sector at k=0; the
+        _update_* methods are then run by run_init_loops in the
+        k=0 execution order generated from the @step graph.
 
         Parameters
         ----------
@@ -471,49 +473,6 @@ class Agriculture:
         self.pfr[0] = 1
         if alone:
             self.loop0_exogenous()
-        self._update_lfc(0)
-        self._update_f(0)
-        self._update_fpc(0)
-        self._update_ifpc(0)
-        self._update_fioaa(0)
-        self._update_tai(0)
-        self._update_dcph(0)
-        # loop 1&2
-        self._update_mlymc(0)
-        self._update_mpai(0)
-        self._update_mpld(0)
-        self._update_fiald(0)
-        # back to loop 1
-        self._update_ldr(0, 0)
-        # loop 2
-        self._update_cai(0)
-        self._update_alai(0)
-        # loop 6
-        self._update_falm(0)
-        self._update_fr(0)
-        # back to loop 2
-        self._update_aiph(0)
-        self._update_lymc(0)
-        self._update_lyf(0)
-        self._update_lymap(0)
-        # loop 4
-        self._update_lfdr(0)
-        # back to loop 2
-        self._update_lfd(0, 0)
-        self._update_ly(0)
-        # loop 3
-        self._update_all(0)
-        self._update_llmy(0)
-        self._update_ler(0, 0)
-        self._update_uilpc(0)
-        self._update_uilr(0)
-        self._update_lrui(0, 0)
-        # loop 5
-        self._update_lfr(0, 0)
-        self._update_lfrt(0)
-        # recompute supplementary initial conditions
-        self._update_ai(0)
-        self._update_pfr(0)
 
     def run_agriculture(self):
         """

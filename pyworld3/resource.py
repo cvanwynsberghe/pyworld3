@@ -242,7 +242,9 @@ class Resource:
 
     def loop0_resource(self, alone=False):
         """
-        Run a sequence to initialize the resource sector (loop with k=0).
+        Set the initial conditions of the sector at k=0; the
+        _update_* methods are then run by run_init_loops in the
+        k=0 execution order generated from the @step graph.
 
         Parameters
         ----------
@@ -252,13 +254,8 @@ class Resource:
 
         """
         self.nr[0] = self.nri
-        self._update_nrfr(0)
-        self._update_fcaor(0)
         if alone:
             self.loop0_exogenous()
-        self._update_nruf(0)
-        self._update_pcrum(0)
-        self._update_nrur(0, 0)
 
     def run_resource(self):
         """

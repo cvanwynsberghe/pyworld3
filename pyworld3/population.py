@@ -451,7 +451,9 @@ class Population:
 
     def loop0_population(self, alone=False):
         """
-        Run a sequence to initialize the population sector (loop with k=0).
+        Set the initial conditions of the sector at k=0; the
+        _update_* methods are then run by run_init_loops in the
+        k=0 execution order generated from the @step graph.
 
         Parameters
         ----------
@@ -469,57 +471,6 @@ class Population:
         self.pop[0] = self.p1[0] + self.p2[0] + self.p3[0] + self.p4[0]
         if alone:
             self.loop0_exogenous()
-        # Death rate subsector
-        # connect World3 sectors to Population
-        # pop from initialisation
-        self._update_fpu(0)
-        self._update_lmp(0)
-        self._update_lmf(0)
-        self._update_cmi(0)
-        self._update_hsapc(0)
-        # inside Population sector
-        self._update_ehspc(0)
-        self._update_lmhs(0)
-        self._update_lmc(0)
-        self._update_le(0)
-        self._update_m1(0)
-        self._update_m2(0)
-        self._update_m3(0)
-        self._update_m4(0)
-        self._update_mat1(0, 0)
-        self._update_mat2(0, 0)
-        self._update_mat3(0, 0)
-        self._update_d1(0, 0)
-        self._update_d2(0, 0)
-        self._update_d3(0, 0)
-        self._update_d4(0, 0)
-        self._update_d(0, 0)   # replace (0, -1) by (0, 0) at init
-        self._update_cdr(0)
-        # Birth rate subsector
-        # connect World3 sectors to Population
-        # industrial Output > Population
-        self._update_aiopc(0)
-        self._update_diopc(0)
-        self._update_fie(0)
-        # inside Population sector
-        self._update_sfsn(0)
-        self._update_frsn(0)
-        self._update_dcfs(0)
-        self._update_ple(0)
-        self._update_cmple(0)
-        self._update_dtf(0)
-        self._update_fm(0)
-        self._update_mtf(0)
-        self._update_nfc(0)
-        self._update_fsafc(0)
-        self._update_fcapc(0)
-        self._update_fcfpc(0)
-        self._update_fce(0)
-        self._update_tf(0)
-        self._update_cbr(0, 0)  # replace (0, -1) by (0, 0) at init
-        self._update_b(0, 0)
-        # recompute supplementary initial conditions
-        self._update_frsn(0)
 
     def run_population(self):
         """

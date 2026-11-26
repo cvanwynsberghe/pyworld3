@@ -105,35 +105,43 @@ def compile_steps(obj, order):
 
 def run_init_loops(obj, loop0_fns):
     """
-    Run the loop0_* initializers of a World3 (or sector) instance, rescheduling
-    until every variable read by a non-state _update_* method is known at k=0.
+    Run the k=0 initialization of a World3 (or sector) instance.
 
-    The original World3 model has circular dependencies at k=0 (all time
-    indices collapse to 0); they are resolved by iterating the initializers,
-    with the variables directly assigned in the loop0_* bodies acting as
-    roots. For k >= 1 the dependency graph is acyclic and a single pass in
-    build_execution_order suffices.
+    The loop0_* initializers apply the initial conditions (and the
+    exogenous inputs in standalone sector mode); the _update_* methods
+    are then executed once per pass in the topological order of the @step
+    dependency graph at k=0 (build_execution_order with init=True, where
+    all time indices collapse to 0 and the variables directly assigned in
+    the loop0_* bodies act as roots). Passes are rescheduled until every
+    variable read at k=0 is known, which resolves the circular
+    dependencies of the original model at k=0.
 
     Parameters
     ----------
     obj : World3 or sector instance
         Initialized instance (constants, variables, tables, delays set).
     loop0_fns : list of callables
-        The loop0_* methods to run at each pass.
+        The loop0_* methods applying the initial conditions at each pass.
 
     """
-    leaves = build_execution_order(type(obj), init=True)
+    cls = type(obj)
+    leaves = build_execution_order(cls, init=True)
+    steps = compile_steps(obj, [(name, argnames) for name, argnames in leaves
+                                if not name.startswith("loopk_exogenous")])
     obj.redo_loop = True
     while obj.redo_loop:
         obj.redo_loop = False
         for fn in loop0_fns:
             fn()
+        for fn in steps:
+            fn(0, 0, 0, 0)
         for name, _argnames in leaves:
-            for var in getattr(type(obj), name)._step_info[0]:
+            for var in getattr(cls, name)._step_info[0]:
                 arr = getattr(obj, var, None)
                 if (isinstance(arr, np.ndarray) and arr.shape == (obj.n,)
                         and isnan(arr[0])):
                     obj.redo_loop = True
+
 
 def build_execution_order(cls, init=False):
     """
