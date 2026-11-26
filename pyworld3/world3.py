@@ -32,6 +32,8 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 
+from types import MethodType
+
 from numpy import arange
 
 from .population import Population
@@ -198,7 +200,9 @@ class World3(Population, Capital, Agriculture, Pollution, Resource):
         Parameters
         ----------
         fast : boolean, optional
-            run the loop without checking [unsafe]. The default is False.
+            If False, run with rescheduling (safe).
+            If True, run with hardcoded fast sequence (unsafe).
+            The default is False.
 
         """
         if fast:
@@ -238,6 +242,11 @@ class World3(Population, Capital, Agriculture, Pollution, Resource):
         Run a sorted sequence to update the model, with no
         checking [unsafe].
 
+        The initialization (k=0) still uses the @requires wrappers, because
+        rescheduling is needed there. For k >= 1 the sequence is fixed, so
+        the raw update functions are called directly, skipping the per-step
+        dependency checks of the wrappers.
+
         """
         self.redo_loop = True
         while self.redo_loop:  # unsorted updates at initialization only
@@ -248,10 +257,37 @@ class World3(Population, Capital, Agriculture, Pollution, Resource):
             self.loop0_pollution()
             self.loop0_resource()
 
-        for k_ in range(1, self.n):
-            if self.verbose:
-                print("go loop", k_)
-            self._loopk_world3_fast(k_-1, k_, k_-1, k_)  # sorted updates
+        shadowed = self._bind_raw_updaters()
+        try:
+            for k_ in range(1, self.n):
+                if self.verbose:
+                    print("go loop", k_)
+                self._loopk_world3_fast(k_-1, k_, k_-1, k_)  # sorted updates
+        finally:
+            for name in shadowed:  # restore wrapped methods on this instance
+                del self.__dict__[name]
+
+    def _bind_raw_updaters(self):
+        """
+        Bind the raw (undecorated) _update_* methods of this instance, so
+        that calls from _loopk_world3_fast skip the @requires wrappers.
+
+        Returns
+        -------
+        list of str
+            Names shadowed on the instance, to restore them afterwards.
+
+        """
+        shadowed = []
+        seen = set()
+        for klass in type(self).__mro__:
+            for name, attr in vars(klass).items():
+                if name.startswith("_update_") and name not in seen:
+                    seen.add(name)
+                    raw = getattr(attr, "__wrapped__", attr)
+                    setattr(self, name, MethodType(raw, self))
+                    shadowed.append(name)
+        return shadowed
 
     def _loopk_world3_fast(self, j, k, jk, kl):
         """
@@ -388,6 +424,8 @@ class World3(Population, Capital, Agriculture, Pollution, Resource):
         self._update_b(k, kl)
         self._update_fioai(k)
         self._update_icir(k, kl)
+
+
 
 
 def hello_world3():

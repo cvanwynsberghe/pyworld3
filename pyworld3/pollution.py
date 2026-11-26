@@ -35,10 +35,9 @@
 import os
 import json
 
-from scipy.interpolate import interp1d
 import numpy as np
 
-from .specials import Dlinf3, clip, switch, Delay3
+from .specials import TableFunction, Dlinf3, clip, switch, Delay3
 from .utils import requires
 
 
@@ -227,10 +226,7 @@ class Pollution:
         for func_name in func_names:
             for table in tables:
                 if table["y.name"] == func_name:
-                    func = interp1d(table["x.values"], table["y.values"],
-                                    bounds_error=False,
-                                    fill_value=(table["y.values"][0],
-                                                table["y.values"][-1]))
+                    func = TableFunction(table["x.values"], table["y.values"])
                     setattr(self, func_name.lower()+"_f", func)
 
     def init_exogenous_inputs(self):
@@ -288,10 +284,7 @@ class Pollution:
                     x_0_to_30,
                     x_0_to_30]
         for func_name, x_vals, y_vals in zip(func_names, x_values, y_values):
-            func = interp1d(x_vals, y_vals,
-                            bounds_error=False,
-                            fill_value=(y_vals[0],
-                                        y_vals[-1]))
+            func = TableFunction(x_vals, y_vals)
             setattr(self, func_name.lower()+"_f", func)
         # Delays
         var_dlinf3 = ["PCTI", "LMP"]

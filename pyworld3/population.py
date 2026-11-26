@@ -35,10 +35,9 @@
 import os
 import json
 
-from scipy.interpolate import interp1d
 import numpy as np
 
-from .specials import Dlinf3, Smooth, clip, ramp
+from .specials import TableFunction, Dlinf3, Smooth, clip, ramp
 from .utils import requires
 
 
@@ -363,10 +362,7 @@ class Population:
         for func_name in func_names:
             for table in tables:
                 if table["y.name"] == func_name:
-                    func = interp1d(table["x.values"], table["y.values"],
-                                    bounds_error=False,
-                                    fill_value=(table["y.values"][0],
-                                                table["y.values"][-1]))
+                    func = TableFunction(table["x.values"], table["y.values"])
                     setattr(self, func_name.lower()+"_f", func)
 
     def init_exogenous_inputs(self):
