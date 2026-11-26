@@ -32,58 +32,219 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 
-from functools import wraps
+import inspect
+import re
+from collections import defaultdict, deque
+
+import numpy as np
+from numpy import isnan
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import EngFormatter
 from matplotlib.image import imread
-from numpy import isnan
 
-verbose_debug = False
-
-
-def requires(outputs=None, inputs=None,
-             check_at_init=True, check_after_init=True):
+def step(reads=None, writes=None):
     """
-    Decorator generator to reschedule all updates of current loop, if all
-    required inputs of the current update are not known.
+    Declare the variables read and written by an _update_* method, with the
+    time index at which each access happens.
+
+    Parameters
+    ----------
+    reads : dict, optional
+        variable name -> index it is read at. "k"/"kl" mean the current step,
+        "j"/"jk" the previous one. A variable may map to a list of indices.
+    writes : dict, optional
+        variable name -> index it is written at.
+
+    The dependency graph of the model is built from this metadata only (see
+    build_execution_order): a consumer depends on the producer of a variable
+    only when it reads it at the current step; reads at the previous step
+    create no edge.
 
     """
 
-    def requires_decorator(updater):
+    def step_decorator(fn):
+        fn._step_info = (reads or {}, writes or {})
+        return fn
 
-        if verbose_debug:
-            print("""Define the update requirements...
-                  - inputs:  {}
-                  - outputs: {}
-                  - check at init [k=0]:    {}
-                  - check after init [k>0]: {}""".format(inputs, outputs,
-                                                         check_at_init,
-                                                         check_after_init))
-            print("... and create a requires decorator for the update function",
-                  updater.__name__)
+    return step_decorator
 
-        @wraps(updater)
-        def requires_and_update(self, *args):
-            k = args[0]
-            go_grant = ((k == 0) and check_at_init or
-                        (k > 0) and check_after_init)
-            if inputs is not None and go_grant:
-                for input_ in inputs:
-                    input_arr = getattr(self, input_.lower())
-                    if isnan(input_arr[k]):
-                        if self.verbose:
-                            warn_msg = "Warning, {} unknown for current k={} -"
-                            print(warn_msg.format(input_, k), updater.__name__)
-                            print("Rescheduling current loop")
-                        self.redo_loop = True
+_EXECUTION_ORDERS = {}
 
-            return updater(self, *args)
+def compile_steps(obj, order):
+    """
+    Bind the (method name, argument names) pairs of an execution order into
+    callables taking (k, j, jk, kl), so the simulation loop has no per-step
+    argument dispatch overhead.
 
-        return requires_and_update
+    """
+    steps = []
+    for name, argnames in order:
+        fn = getattr(obj, name)
+        a = tuple(argnames)
+        if a == ("k",):
+            steps.append(lambda k, j, jk, kl, fn=fn: fn(k))
+        elif a == ("k", "j"):
+            steps.append(lambda k, j, jk, kl, fn=fn: fn(k, j))
+        elif a == ("k", "jk"):
+            steps.append(lambda k, j, jk, kl, fn=fn: fn(k, jk))
+        elif a == ("k", "kl"):
+            steps.append(lambda k, j, jk, kl, fn=fn: fn(k, kl))
+        elif a == ("k", "j", "jk"):
+            steps.append(lambda k, j, jk, kl, fn=fn: fn(k, j, jk))
+        elif a == ("k", "j", "jk", "kl"):
+            steps.append(lambda k, j, jk, kl, fn=fn: fn(k, j, jk, kl))
+        else:
+            def make(fn=fn, a=a):
+                def step(k, j, jk, kl):
+                    argmap = {"k": k, "j": j, "jk": jk, "kl": kl}
+                    return fn(*[argmap[x] for x in a])
+                return step
+            steps.append(make())
+    return steps
 
-    return requires_decorator
+def run_init_loops(obj, loop0_fns):
+    """
+    Run the loop0_* initializers of a World3 (or sector) instance, rescheduling
+    until every variable read by a non-state _update_* method is known at k=0.
 
+    The original World3 model has circular dependencies at k=0 (all time
+    indices collapse to 0); they are resolved by iterating the initializers,
+    with the variables directly assigned in the loop0_* bodies acting as
+    roots. For k >= 1 the dependency graph is acyclic and a single pass in
+    build_execution_order suffices.
+
+    Parameters
+    ----------
+    obj : World3 or sector instance
+        Initialized instance (constants, variables, tables, delays set).
+    loop0_fns : list of callables
+        The loop0_* methods to run at each pass.
+
+    """
+    leaves = build_execution_order(type(obj), init=True)
+    obj.redo_loop = True
+    while obj.redo_loop:
+        obj.redo_loop = False
+        for fn in loop0_fns:
+            fn()
+        for name, _argnames in leaves:
+            for var in getattr(type(obj), name)._step_info[0]:
+                arr = getattr(obj, var, None)
+                if (isinstance(arr, np.ndarray) and arr.shape == (obj.n,)
+                        and isnan(arr[0])):
+                    obj.redo_loop = True
+
+def build_execution_order(cls, init=False):
+    """
+    Build the topological execution order of all _update_* methods of a
+    class, from their @step metadata. The result is cached per class.
+
+    Parameters
+    ----------
+    cls : class
+        The World3 class (or a sector class).
+    init : bool, optional
+        Order for the initialization step (k=0), where all time indices
+        collapse to 0 and every read creates an edge (state leaves are
+        excluded, as they are never called at k=0). If False (default),
+        only reads at the current step ("k"/"kl") create an edge; reads
+        at the previous step ("j"/"jk") refer to the computed step.
+
+    Returns
+    -------
+    list of (str, list of str)
+        (method name, argument names) in execution order.
+
+    Raises
+    ------
+    ValueError
+        If a circular same-step dependency is found.
+
+    """
+    key = (cls, init)
+    if key in _EXECUTION_ORDERS:
+        return _EXECUTION_ORDERS[key]
+
+    methods = {}
+    for klass in cls.__mro__:
+        for name, attr in vars(klass).items():
+            if hasattr(attr, "_step_info"):
+                # state leaves are never called at k=0; excluding them keeps
+                # the init graph acyclic
+                if init and name.startswith("_update_state_"):
+                    continue
+                methods[name] = attr
+
+    # in the full model, the loopk_exogenous methods are unused: their
+    # variables are then produced by _update_* methods. In a standalone
+    # sector they provide the exogenous inputs and must stay in the graph.
+    update_writes = {v for m, a in methods.items()
+                     if m.startswith("_update_") for v in a._step_info[1]}
+    for name in [n for n in methods if n.startswith("loopk_exogenous")]:
+        exo_writes = methods[name]._step_info[1]
+        if any(v in update_writes for v in exo_writes):
+            del methods[name]
+
+    # at k=0, variables directly assigned in the loop0_* methods are initial
+    # conditions: they are roots of the init graph (no incoming edge). This
+    # is what breaks the circular dependencies of the original model at k=0.
+    init_roots = set()
+    if init:
+        for klass in cls.__mro__:
+            for name, attr in vars(klass).items():
+                if name.startswith("loop0_") and "exogenous" not in name:
+                    for var in re.findall(r"self\.([a-z0-9_]+)\[0\] =",
+                                          inspect.getsource(attr)):
+                        init_roots.add(var)
+
+    producers = defaultdict(list)
+    for name, attr in methods.items():
+        for var in attr._step_info[1]:
+            producers[var].append(name)
+
+    preds = {}
+    for name, attr in methods.items():
+        reads = attr._step_info[0]
+        p = set()
+        for var, idx in reads.items():
+            if var in init_roots:
+                continue
+            indices = idx if isinstance(idx, (list, tuple)) else (idx,)
+            # "k0" marks the input of a smooth/delay callable: read at the
+            # current step only at k=0 (at k>0 it reads the previous step)
+            if init or any(i in ("k", "kl") for i in indices):
+                for prod in producers.get(var, []):
+                    if prod != name:
+                        p.add(prod)
+        preds[name] = p
+
+    indeg = {m: len(p) for m, p in preds.items()}
+    succ = defaultdict(set)
+    for m, p in preds.items():
+        for x in p:
+            succ[x].add(m)
+
+    ready = sorted(m for m in methods if indeg[m] == 0)
+    order = []
+    while ready:
+        m = ready.pop(0)
+        order.append(m)
+        for c in sorted(succ[m]):
+            indeg[c] -= 1
+            if indeg[c] == 0:
+                ready.append(c)
+        ready.sort()
+
+    if len(order) != len(methods):
+        cyclic = sorted(set(methods) - set(order))
+        raise ValueError("circular dependency among: "
+                         + ", ".join(cyclic))
+
+    result = [(m, [a for a in inspect.signature(methods[m]).parameters
+                   if a != "self"]) for m in order]
+    _EXECUTION_ORDERS[key] = result
+    return result
 
 def plot_world_variables(time, var_data, var_names, var_lims,
                          img_background=None,
@@ -146,3 +307,4 @@ def plot_world_variables(time, var_data, var_names, var_lims,
         fig.suptitle(title, x=0.95, ha="right", fontsize=10)
 
     plt.tight_layout()
+

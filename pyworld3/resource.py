@@ -38,7 +38,8 @@ import json
 import numpy as np
 
 from .specials import TableFunction, clip
-from .utils import requires
+from .utils import (build_execution_order, compile_steps,
+                     run_init_loops, step)
 
 
 class Resource:
@@ -206,11 +207,11 @@ class Resource:
         self.io = np.full((self.n,), np.nan)
         self.iopc = np.full((self.n,), np.nan)
 
+    @step(reads={"fcaor": 'k', "ic": ['j', 'k'], "icdr": 'jk', "icir": 'jk', "io": 'k', "pop": 'k', "pop1": 'k', "time": 'k'}, writes={"ic": 'k', "icdr": 'kl', "icir": 'kl', "io": 'k', "iopc": 'k', "pop": 'k', "pop1": 'k'})
     def loopk_exogenous(self, k):
         """
         Run a sorted sequence to update one loop of the exogenous parameters.
-        `@requires` decorator checks that all dependencies are computed
-        previously.
+        The updates follow the @step dependency graph order.
 
         """
         j = k - 1
@@ -259,59 +260,38 @@ class Resource:
         self._update_pcrum(0)
         self._update_nrur(0, 0)
 
-    def loopk_resource(self, j, k, jk, kl, alone=False):
-        """
-        Run a sequence to update one loop of the resource sector.
-
-        Parameters
-        ----------
-        alone : boolean, optional
-            if True, run the sector alone with exogenous inputs. The default
-            is False.
-
-        """
-        self._update_state_nr(k, j, jk)
-        self._update_nrfr(k)
-        self._update_fcaor(k)
-        if alone:
-            self.loopk_exogenous(k)
-        self._update_nruf(k)
-        self._update_pcrum(k)
-        self._update_nrur(k, kl)
-
     def run_resource(self):
         """
-        Run a sequence of updates to simulate the resource sector alone with
-        exogenous inputs.
+        Run the resource sector alone with exogenous inputs. Initialization
+        (k=0) reschedules until all reads are known; for k >= 1 the updates
+        (including the exogenous ones) follow the topological order of the
+        @step dependency graph.
 
         """
-        self.redo_loop = True
-        while self.redo_loop:
-            self.redo_loop = False
-            self.loop0_resource(alone=True)
+        run_init_loops(self, [lambda: self.loop0_resource(alone=True)])
+        steps = compile_steps(self, build_execution_order(type(self)))
         for k_ in range(1, self.n):
-            self.redo_loop = True
-            while self.redo_loop:
-                self.redo_loop = False
-                if self.verbose:
-                    print("go loop", k_)
-                self.loopk_resource(k_-1, k_, k_-1, k_, alone=True)
+            if self.verbose:
+                print("go loop", k_)
+            j = k_ - 1
+            for fn in steps:
+                fn(k_, j, j, k_)
 
-    @requires(["nr"])
+    @step(reads={"nr": 'j', "nrur": 'jk'}, writes={"nr": 'k'})
     def _update_state_nr(self, k, j, jk):
         """
         State variable, requires previous step only
         """
         self.nr[k] = self.nr[j] - self.dt * self.nrur[jk]
 
-    @requires(["nrfr"], ["nr"])
+    @step(reads={"nr": 'k'}, writes={"nrfr": 'k'})
     def _update_nrfr(self, k):
         """
         From step k requires: NR
         """
         self.nrfr[k] = self.nr[k] / self.nri
 
-    @requires(["fcaor1", "fcaor2", "fcaor"], ["nrfr"])
+    @step(reads={"fcaor1": 'k', "fcaor2": 'k', "nrfr": 'k', "time": 'k'}, writes={"fcaor": 'k', "fcaor1": 'k', "fcaor2": 'k'})
     def _update_fcaor(self, k):
         """
         From step k requires: NRFR
@@ -321,21 +301,21 @@ class Resource:
         self.fcaor[k] = clip(self.fcaor2[k], self.fcaor1[k], self.time[k],
                              self.pyear)
 
-    @requires(["nruf"])
+    @step(reads={"time": 'k'}, writes={"nruf": 'k'})
     def _update_nruf(self, k):
         """
         From step k requires: nothing
         """
         self.nruf[k] = clip(self.nruf2, self.nruf1, self.time[k], self.pyear)
 
-    @requires(["pcrum"], ["iopc"])
+    @step(reads={"iopc": 'k'}, writes={"pcrum": 'k'})
     def _update_pcrum(self, k):
         """
         From step k requires: IOPC
         """
         self.pcrum[k] = self.pcrum_f(self.iopc[k])
 
-    @requires(["nrur"], ["pop", "pcrum", "nruf"])
+    @step(reads={"nruf": 'k', "pcrum": 'k', "pop": 'k'}, writes={"nrur": 'kl'})
     def _update_nrur(self, k, kl):
         """
         From step k requires: POP PCRUM NRUF

@@ -38,7 +38,8 @@ import json
 import numpy as np
 
 from .specials import TableFunction, Dlinf3, Smooth, clip, ramp
-from .utils import requires
+from .utils import (build_execution_order, compile_steps,
+                     run_init_loops, step)
 
 
 class Population:
@@ -410,12 +411,11 @@ class Population:
         self.f2 = np.full((self.n,), np.nan)
         self.fpc = np.full((self.n,), np.nan)
 
-    @requires(["io", "iopc", "ppolx", "so", "sopc", "f", "fpc"], ["pop"])
+    @step(reads={"f": 'k', "f1": 'k', "f11": 'k', "f12": 'k', "f2": 'k', "io": 'k', "io1": 'k', "io11": 'k', "io12": 'k', "io2": 'k', "pop": 'k', "so": 'k', "so1": 'k', "so11": 'k', "so12": 'k', "so2": 'k', "time": 'k'}, writes={"f": 'k', "f1": 'k', "f11": 'k', "f12": 'k', "f2": 'k', "fpc": 'k', "io": 'k', "io1": 'k', "io11": 'k', "io12": 'k', "io2": 'k', "iopc": 'k', "ppolx": 'k', "so": 'k', "so1": 'k', "so11": 'k', "so12": 'k', "so2": 'k', "sopc": 'k'})
     def loopk_exogenous(self, k):
         """
         Run a sorted sequence to update one loop of the exogenous parameters.
-        `@requires` decorator checks that all dependencies are computed
-        previously.
+        The updates follow the @step dependency graph order.
 
         """
         # industrial output
@@ -521,92 +521,24 @@ class Population:
         # recompute supplementary initial conditions
         self._update_frsn(0)
 
-    def loopk_population(self, j, k, jk, kl, alone=False):
-        """
-        Run a sequence to update one loop of the population sector.
-
-        Parameters
-        ----------
-        alone : boolean, optional
-            if True, run the sector alone with exogenous inputs. The default
-            is False.
-
-        """
-        self._update_state_p1(k, j, jk)
-        self._update_state_p2(k, j, jk)
-        self._update_state_p3(k, j, jk)
-        self._update_state_p4(k, j, jk)
-        self._update_pop(k)
-        if alone:
-            self.loopk_exogenous(k)
-        # Death rate subsector
-        # connect World3 sectors to Population
-        self._update_fpu(k)
-        self._update_lmp(k)
-        self._update_lmf(k)
-        self._update_cmi(k)
-        self._update_hsapc(k)
-        # inside Population sector
-        self._update_ehspc(k)
-        self._update_lmhs(k)
-        self._update_lmc(k)
-        self._update_le(k)
-        self._update_m1(k)
-        self._update_m2(k)
-        self._update_m3(k)
-        self._update_m4(k)
-        self._update_mat1(k, kl)
-        self._update_mat2(k, kl)
-        self._update_mat3(k, kl)
-        self._update_d1(k, kl)
-        self._update_d2(k, kl)
-        self._update_d3(k, kl)
-        self._update_d4(k, kl)
-        self._update_d(k, jk)
-        self._update_cdr(k)
-        # Birth rate subsector
-        # connect World3 sectors to Population
-        # industrial Output > Population
-        self._update_aiopc(k)
-        self._update_diopc(k)
-        self._update_fie(k)
-        # inside Population sector
-        self._update_sfsn(k)
-        self._update_frsn(k)
-        self._update_dcfs(k)
-        self._update_ple(k)
-        self._update_cmple(k)
-        self._update_dtf(k)
-        self._update_fm(k)
-        self._update_mtf(k)
-        self._update_nfc(k)
-        self._update_fsafc(k)
-        self._update_fcapc(k)
-        self._update_fcfpc(k)
-        self._update_fce(k)
-        self._update_tf(k)
-        self._update_cbr(k, jk)
-        self._update_b(k, kl)
-
     def run_population(self):
         """
-        Run a sequence of updates to simulate the population sector alone with
-        exogenous inputs.
+        Run the population sector alone with exogenous inputs. Initialization
+        (k=0) reschedules until all reads are known; for k >= 1 the updates
+        (including the exogenous ones) follow the topological order of the
+        @step dependency graph.
 
         """
-        self.redo_loop = True
-        while self.redo_loop:
-            self.redo_loop = False
-            self.loop0_population(alone=True)
+        run_init_loops(self, [lambda: self.loop0_population(alone=True)])
+        steps = compile_steps(self, build_execution_order(type(self)))
         for k_ in range(1, self.n):
-            self.redo_loop = True
-            while self.redo_loop:
-                self.redo_loop = False
-                if self.verbose:
-                    print("go loop", k_)
-                self.loopk_population(k_-1, k_, k_-1, k_, alone=True)
+            if self.verbose:
+                print("go loop", k_)
+            j = k_ - 1
+            for fn in steps:
+                fn(k_, j, j, k_)
 
-    @requires(["p1"])
+    @step(reads={"b": 'jk', "d1": 'jk', "mat1": 'jk', "p1": 'j'}, writes={"p1": 'k'})
     def _update_state_p1(self, k, j, jk):
         """
         State variable, requires previous step only
@@ -614,7 +546,7 @@ class Population:
         self.p1[k] = self.p1[j] + self.dt*(self.b[jk] - self.d1[jk]
                                            - self.mat1[jk])
 
-    @requires(["p2"])
+    @step(reads={"d2": 'jk', "mat1": 'jk', "mat2": 'jk', "p2": 'j'}, writes={"p2": 'k'})
     def _update_state_p2(self, k, j, jk):
         """
         State variable, requires previous step only
@@ -622,7 +554,7 @@ class Population:
         self.p2[k] = self.p2[j] + self.dt*(self.mat1[jk] - self.d2[jk]
                                            - self.mat2[jk])
 
-    @requires(["p3"])
+    @step(reads={"d3": 'jk', "mat2": 'jk', "mat3": 'jk', "p3": 'j'}, writes={"p3": 'k'})
     def _update_state_p3(self, k, j, jk):
         """
         State variable, requires previous step only
@@ -630,63 +562,63 @@ class Population:
         self.p3[k] = self.p3[j] + self.dt*(self.mat2[jk] - self.d3[jk]
                                            - self.mat3[jk])
 
-    @requires(["p4"])
+    @step(reads={"d4": 'jk', "mat3": 'jk', "p4": 'j'}, writes={"p4": 'k'})
     def _update_state_p4(self, k, j, jk):
         """
         State variable, requires previous step only
         """
         self.p4[k] = self.p4[j] + self.dt*(self.mat3[jk] - self.d4[jk])
 
-    @requires(["pop"], ["p1", "p2", "p3", "p4"])
+    @step(reads={"p1": 'k', "p2": 'k', "p3": 'k', "p4": 'k'}, writes={"pop": 'k'})
     def _update_pop(self, k):
         """
         From step k=0 requires: P1 P2 P3 P4
         """
         self.pop[k] = self.p1[k] + self.p2[k] + self.p3[k] + self.p4[k]
 
-    @requires(["fpu"], ["pop"])
+    @step(reads={"pop": 'k'}, writes={"fpu": 'k'})
     def _update_fpu(self, k):
         """
         From step k requires: POP
         """
         self.fpu[k] = self.fpu_f(self.pop[k])
 
-    @requires(["lmp"], ["ppolx"])
+    @step(reads={"ppolx": 'k'}, writes={"lmp": 'k'})
     def _update_lmp(self, k):
         """
         From step k requires: PPOLX
         """
         self.lmp[k] = self.lmp_f(self.ppolx[k])  # Pollution >
 
-    @requires(["lmf"], ["fpc"])
+    @step(reads={"fpc": 'k'}, writes={"lmf": 'k'})
     def _update_lmf(self, k):
         """
         From step k requires: FPC
         """
         self.lmf[k] = self.lmf_f(self.fpc[k] / self.sfpc)  # Food >
 
-    @requires(["cmi"], ["iopc"])
+    @step(reads={"iopc": 'k'}, writes={"cmi": 'k'})
     def _update_cmi(self, k):
         """
         From step k requires: IOPC
         """
         self.cmi[k] = self.cmi_f(self.iopc[k])  # Industrial Output >
 
-    @requires(["hsapc"], ["sopc"])
+    @step(reads={"sopc": 'k'}, writes={"hsapc": 'k'})
     def _update_hsapc(self, k):
         """
         From step k requires: SOPC
         """
         self.hsapc[k] = self.hsapc_f(self.sopc[k])  # Service Output >
 
-    @requires(["ehspc"], ["hsapc"], check_after_init=False)
+    @step(reads={"hsapc": 'k0'}, writes={"ehspc": 'k'})
     def _update_ehspc(self, k):
         """
         From step k=0 requires: HSAPC, else nothing
         """
         self.ehspc[k] = self.smooth_hsapc(k, self.hsid)
 
-    @requires(["lmhs1", "lmhs2", "lmhs"], ["ehspc"])
+    @step(reads={"ehspc": 'k', "lmhs1": 'k', "lmhs2": 'k', "time": 'k'}, writes={"lmhs": 'k', "lmhs1": 'k', "lmhs2": 'k'})
     def _update_lmhs(self, k):
         """
         From step k requires: EHSPC
@@ -696,42 +628,42 @@ class Population:
         self.lmhs[k] = clip(self.lmhs2[k], self.lmhs1[k],
                             self.time[k], self.iphst)
 
-    @requires(["lmc"], ["cmi", "fpu"])
+    @step(reads={"cmi": 'k', "fpu": 'k'}, writes={"lmc": 'k'})
     def _update_lmc(self, k):
         """
         From step k requires: CMI FPU
         """
         self.lmc[k] = 1 - self.cmi[k]*self.fpu[k]
 
-    @requires(["m1"], ["le"])
+    @step(reads={"le": 'k'}, writes={"m1": 'k'})
     def _update_m1(self, k):
         """
         From step k requires: LE
         """
         self.m1[k] = self.m1_f(self.le[k])
 
-    @requires(["m2"], ["le"])
+    @step(reads={"le": 'k'}, writes={"m2": 'k'})
     def _update_m2(self, k):
         """
         From step k requires: LE
         """
         self.m2[k] = self.m2_f(self.le[k])
 
-    @requires(["m3"], ["le"])
+    @step(reads={"le": 'k'}, writes={"m3": 'k'})
     def _update_m3(self, k):
         """
         From step k requires: LE
         """
         self.m3[k] = self.m3_f(self.le[k])
 
-    @requires(["m4"], ["le"])
+    @step(reads={"le": 'k'}, writes={"m4": 'k'})
     def _update_m4(self, k):
         """
         From step k requires: LE
         """
         self.m4[k] = self.m4_f(self.le[k])
 
-    @requires(["le"], ["lmf", "lmhs", "lmp", "lmc"])
+    @step(reads={"lmc": 'k', "lmf": 'k', "lmhs": 'k', "lmp": 'k'}, writes={"le": 'k'})
     def _update_le(self, k):
         """
         From step k requires: LMF LMHS LMP LMC
@@ -739,105 +671,105 @@ class Population:
         self.le[k] = (self.len * self.lmf[k] * self.lmhs[k]
                       * self.lmp[k] * self.lmc[k])
 
-    @requires(["mat1"], ["p1", "m1"])
+    @step(reads={"m1": 'k', "p1": 'k'}, writes={"mat1": 'kl'})
     def _update_mat1(self, k, kl):
         """
         From step k requires: P1 M1
         """
         self.mat1[kl] = self.p1[k] * (1 - self.m1[k]) / 15
 
-    @requires(["mat2"], ["p2", "m2"])
+    @step(reads={"m2": 'k', "p2": 'k'}, writes={"mat2": 'kl'})
     def _update_mat2(self, k, kl):
         """
         From step k requires: P2 M2
         """
         self.mat2[kl] = self.p2[k] * (1 - self.m2[k]) / 30
 
-    @requires(["mat3"], ["p3", "m3"])
+    @step(reads={"m3": 'k', "p3": 'k'}, writes={"mat3": 'kl'})
     def _update_mat3(self, k, kl):
         """
         From step k requires: P3 M3
         """
         self.mat3[kl] = self.p3[k] * (1 - self.m3[k]) / 20
 
-    @requires(["d1"], ["p1", "m1"])
+    @step(reads={"m1": 'k', "p1": 'k'}, writes={"d1": 'kl'})
     def _update_d1(self, k, kl):
         """
         From step k requires: P1 M1
         """
         self.d1[kl] = self.p1[k] * self.m1[k]
 
-    @requires(["d2"], ["p2", "m2"])
+    @step(reads={"m2": 'k', "p2": 'k'}, writes={"d2": 'kl'})
     def _update_d2(self, k, kl):
         """
         From step k requires: P2 M2
         """
         self.d2[kl] = self.p2[k] * self.m2[k]
 
-    @requires(["d3"], ["p3", "m3"])
+    @step(reads={"m3": 'k', "p3": 'k'}, writes={"d3": 'kl'})
     def _update_d3(self, k, kl):
         """
         From step k requires: P3 M3
         """
         self.d3[kl] = self.p3[k] * self.m3[k]
 
-    @requires(["d4"], ["p4", "m4"])
+    @step(reads={"m4": 'k', "p4": 'k'}, writes={"d4": 'kl'})
     def _update_d4(self, k, kl):
         """
         From step k requires: P4 M4
         """
         self.d4[kl] = self.p4[k] * self.m4[k]
 
-    @requires(["d"])
+    @step(reads={"d1": 'jk', "d2": 'jk', "d3": 'jk', "d4": 'jk'}, writes={"d": 'k'})
     def _update_d(self, k, jk):
         """
         From step k requires: nothing
         """
         self.d[k] = self.d1[jk] + self.d2[jk] + self.d3[jk] + self.d4[jk]
 
-    @requires(["cdr"], ["d", "pop"])
+    @step(reads={"d": 'k', "pop": 'k'}, writes={"cdr": 'k'})
     def _update_cdr(self, k):
         """
         From step k requires: D POP
         """
         self.cdr[k] = 1000 * self.d[k] / self.pop[k]
 
-    @requires(["aiopc"], ["iopc"], check_after_init=False)
+    @step(reads={"iopc": 'k0'}, writes={"aiopc": 'k'})
     def _update_aiopc(self, k):
         """
         From step k=0 requires: IOPC, else nothing
         """
         self.aiopc[k] = self.smooth_iopc(k, self.ieat)
 
-    @requires(["diopc"], ["iopc"], check_after_init=False)
+    @step(reads={"iopc": 'k0'}, writes={"diopc": 'k'})
     def _update_diopc(self, k):
         """
         From step k=0 requires: IOPC, else nothing
         """
         self.diopc[k] = self.dlinf3_iopc(k, self.sad)
 
-    @requires(["fie"], ["iopc", "aiopc"])
+    @step(reads={"aiopc": 'k', "iopc": 'k'}, writes={"fie": 'k'})
     def _update_fie(self, k):
         """
         From step k requires: IOPC AIOPC
         """
         self.fie[k] = (self.iopc[k] - self.aiopc[k]) / self.aiopc[k]
 
-    @requires(["sfsn"], ["diopc"])
+    @step(reads={"diopc": 'k'}, writes={"sfsn": 'k'})
     def _update_sfsn(self, k):
         """
         From step k requires: DIOPC
         """
         self.sfsn[k] = self.sfsn_f(self.diopc[k])
 
-    @requires(["frsn"], ["fie"])
+    @step(reads={"fie": 'k'}, writes={"frsn": 'k'})
     def _update_frsn(self, k):
         """
         From step k requires: FIE
         """
         self.frsn[k] = self.frsn_f(self.fie[k])
 
-    @requires(["dcfs"], ["frsn", "sfsn"])
+    @step(reads={"frsn": 'k', "sfsn": 'k', "time": 'k'}, writes={"dcfs": 'k'})
     def _update_dcfs(self, k):
         """
         From step k requires: FRSN SFSN
@@ -845,70 +777,70 @@ class Population:
         self.dcfs[k] = clip(2.0, self.dcfsn*self.frsn[k]*self.sfsn[k],
                             self.time[k], self.zpgt)
 
-    @requires(["ple"], ["le"], check_after_init=False)
+    @step(reads={"le": 'k0'}, writes={"ple": 'k'})
     def _update_ple(self, k):
         """
         From step k=0 requires: LE, else nothing
         """
         self.ple[k] = self.dlinf3_le(k, self.lpd)
 
-    @requires(["cmple"], ["ple"])
+    @step(reads={"ple": 'k'}, writes={"cmple": 'k'})
     def _update_cmple(self, k):
         """
         From step k requires: PLE
         """
         self.cmple[k] = self.cmple_f(self.ple[k])
 
-    @requires(["dtf"], ["dcfs", "cmple"])
+    @step(reads={"cmple": 'k', "dcfs": 'k'}, writes={"dtf": 'k'})
     def _update_dtf(self, k):
         """
         From step k requires: DCFS CMPLE
         """
         self.dtf[k] = self.dcfs[k] * self.cmple[k]
 
-    @requires(["fm"], ["le"])
+    @step(reads={"le": 'k'}, writes={"fm": 'k'})
     def _update_fm(self, k):
         """
         From step k requires: LE
         """
         self.fm[k] = self.fm_f(self.le[k])
 
-    @requires(["mtf"], ["fm"])
+    @step(reads={"fm": 'k'}, writes={"mtf": 'k'})
     def _update_mtf(self, k):
         """
         From step k requires: FM
         """
         self.mtf[k] = self.mtfn * self.fm[k]
 
-    @requires(["nfc"], ["mtf", "dtf"])
+    @step(reads={"dtf": 'k', "mtf": 'k'}, writes={"nfc": 'k'})
     def _update_nfc(self, k):
         """
         From step k requires: MTF DTF
         """
         self.nfc[k] = self.mtf[k] / self.dtf[k] - 1
 
-    @requires(["fsafc"], ["nfc"])
+    @step(reads={"nfc": 'k'}, writes={"fsafc": 'k'})
     def _update_fsafc(self, k):
         """
         From step k requires: NFC
         """
         self.fsafc[k] = self.fsafc_f(self.nfc[k])
 
-    @requires(["fcapc"], ["fsafc", "sopc"])
+    @step(reads={"fsafc": 'k', "sopc": 'k'}, writes={"fcapc": 'k'})
     def _update_fcapc(self, k):
         """
         From step k requires: FSAFC SOPC
         """
         self.fcapc[k] = self.fsafc[k] * self.sopc[k]  # Service Output >
 
-    @requires(["fcfpc"], ["fcapc"], check_after_init=False)
+    @step(reads={"fcapc": 'k0'}, writes={"fcfpc": 'k'})
     def _update_fcfpc(self, k):
         """
         From step k=0 requires: FCAPC, else nothing
         """
         self.fcfpc[k] = self.dlinf3_fcapc(k, self.hsid)
 
-    @requires(["fce"], ["fcfpc"])
+    @step(reads={"fcfpc": 'k', "time": 'k'}, writes={"fce": 'k'})
     def _update_fce(self, k):
         """
         From step k requires: FCFPC
@@ -916,7 +848,7 @@ class Population:
         self.fce[k] = clip(1.0, self.fce_toclip_f(self.fcfpc[k]),
                            self.time[k], self.fcest)
 
-    @requires(["tf"], ["mtf", "fce", "dtf"])
+    @step(reads={"dtf": 'k', "fce": 'k', "mtf": 'k'}, writes={"tf": 'k'})
     def _update_tf(self, k):
         """
         From step k requires: MTF FCE DTF
@@ -924,14 +856,14 @@ class Population:
         self.tf[k] = np.minimum(self.mtf[k], (self.mtf[k]*(1-self.fce[k]) +
                                               self.dtf[k]*self.fce[k]))
 
-    @requires(["cbr"], ["pop"])
+    @step(reads={"b": 'jk', "pop": 'k'}, writes={"cbr": 'k'})
     def _update_cbr(self, k, jk):
         """
         From step k requires: POP
         """
         self.cbr[k] = 1000 * self.b[jk] / self.pop[k]
 
-    @requires(["b"], ["d", "p2", "tf"])
+    @step(reads={"d": 'k', "p2": 'k', "tf": 'k', "time": 'k'}, writes={"b": 'kl'})
     def _update_b(self, k, kl):
         """
         From step k requires: D P2 TF

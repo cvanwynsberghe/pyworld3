@@ -13,7 +13,7 @@ world3.init_world3_constants()
 world3.init_world3_variables()
 world3.set_world3_table_functions()
 world3.set_world3_delay_functions()
-world3.run_world3(fast=False)
+world3.run_world3()
 
 plot_world_variables(world3.time,
                      [world3.nrfr, world3.iopc, world3.fpc, world3.pop,

@@ -38,7 +38,8 @@ import json
 import numpy as np
 
 from .specials import TableFunction, Smooth, clip
-from .utils import requires
+from .utils import (build_execution_order, compile_steps,
+                     run_init_loops, step)
 
 
 class Agriculture:
@@ -417,12 +418,11 @@ class Agriculture:
         self.ppolx1 = np.zeros((self.n,))
         self.ppolx2 = np.zeros((self.n,))
 
-    @requires(["pop", "io", "iopc", "ppolx"])
+    @step(reads={"io": 'k', "io1": 'k', "io2": 'k', "pop": 'k', "pop1": 'k', "pop2": 'k', "ppolx1": 'k', "ppolx2": 'k', "time": 'k'}, writes={"io": 'k', "io1": 'k', "io2": 'k', "iopc": 'k', "pop": 'k', "pop1": 'k', "pop2": 'k', "ppolx": 'k', "ppolx1": 'k', "ppolx2": 'k'})
     def loopk_exogenous(self, k):
         """
         Run a sorted sequence to update one loop of the exogenous parameters.
-        `@requires` decorator checks that all dependencies are computed
-        previously.
+        The updates follow the @step dependency graph order.
 
         """
         self.pop1[k] = self.popi * np.exp(0.012 * (self.time[k] -
@@ -515,95 +515,31 @@ class Agriculture:
         self._update_ai(0)
         self._update_pfr(0)
 
-    def loopk_agriculture(self, j, k, jk, kl, alone=False):
-        """
-        Run a sequence to update one loop of the agriculture sector.
-
-        Parameters
-        ----------
-        alone : boolean, optional
-            if True, run the sector alone with exogenous inputs. The default
-            is False.
-
-        """
-        if alone:
-            self.loopk_exogenous(k)
-        # Update state variables
-        self._update_state_al(k, j, jk)
-        self._update_state_pal(k, j, jk)
-        self._update_state_uil(k, j, jk)
-        self._update_state_lfert(k, j, jk)
-        # loop 1
-        self._update_lfc(k)
-        self._update_f(k)
-        self._update_fpc(k)
-        self._update_ifpc(k)
-        self._update_fioaa(k)
-        self._update_tai(k)
-        self._update_dcph(k)
-        # loop 1&2
-        self._update_mlymc(k)
-        self._update_mpai(k)
-        self._update_mpld(k)
-        self._update_fiald(k)
-        # back to loop 1
-        self._update_ldr(k, kl)
-        # loop 2
-        self._update_cai(k)
-        self._update_alai(k)
-        self._update_ai(k)  # !!! checks cai for all k but useless if >=1
-        # loop 6
-        self._update_pfr(k)
-        self._update_falm(k)
-        self._update_fr(k)
-        # back to loop 2
-        self._update_aiph(k)
-        self._update_lymc(k)
-        self._update_lyf(k)
-        self._update_lymap(k)
-        # loop 4
-        self._update_lfdr(k)
-        # back to loop 2
-        self._update_lfd(k, kl)
-        self._update_ly(k)
-        # loop 3
-        self._update_all(k)
-        self._update_llmy(k)
-        self._update_ler(k, kl)
-        self._update_uilpc(k)
-        self._update_uilr(k)
-        self._update_lrui(k, kl)
-        # loop 5
-        self._update_lfr(k, kl)
-        self._update_lfrt(k)
-
     def run_agriculture(self):
         """
-        Run a sequence of updates to simulate the agriculture sector alone with
-        exogenous inputs.
+        Run the agriculture sector alone with exogenous inputs. Initialization
+        (k=0) reschedules until all reads are known; for k >= 1 the updates
+        (including the exogenous ones) follow the topological order of the
+        @step dependency graph.
 
         """
-        self.redo_loop = True
-        while self.redo_loop:
-            self.redo_loop = False
-            self.loop0_agriculture(alone=True)
-
+        run_init_loops(self, [lambda: self.loop0_agriculture(alone=True)])
+        steps = compile_steps(self, build_execution_order(type(self)))
         for k_ in range(1, self.n):
-            self.redo_loop = True
-            while self.redo_loop:
-                self.redo_loop = False
-                if self.verbose:
-                    print("go loop", k_)
-                self.loopk_agriculture(k_-1, k_, k_-1, k_, alone=True)
+            if self.verbose:
+                print("go loop", k_)
+            j = k_ - 1
+            for fn in steps:
+                fn(k_, j, j, k_)
 
-    @requires(["lfc"], ["al"])
+    @step(reads={"al": 'k'}, writes={"lfc": 'k'})
     def _update_lfc(self, k):
         """
         From step k requires: AL
         """
         self.lfc[k] = self.al[k] / self.palt
 
-    @requires(["al"])
+    @step(reads={"al": 'j', "ldr": 'jk', "ler": 'jk', "lrui": 'jk'}, writes={"al": 'k'})
     def _update_state_al(self, k, j, jk):
         """
         State variable, requires previous step only
@@ -611,28 +547,28 @@ class Agriculture:
         self.al[k] = self.al[j] + self.dt * (self.ldr[jk] - self.ler[jk] -
                                              self.lrui[jk])
 
-    @requires(["pal"])
+    @step(reads={"ldr": 'jk', "pal": 'j'}, writes={"pal": 'k'})
     def _update_state_pal(self, k, j, jk):
         """
         State variable, requires previous step only
         """
         self.pal[k] = self.pal[j] - self.dt * self.ldr[jk]
 
-    @requires(["f"], ["ly", "al"])
+    @step(reads={"al": 'k', "ly": 'k'}, writes={"f": 'k'})
     def _update_f(self, k):
         """
         From step k requires: LY AL
         """
         self.f[k] = self.ly[k] * self.al[k] * self.lfh * (1 - self.pl)
 
-    @requires(["fpc"], ["f", "pop"])
+    @step(reads={"f": 'k', "pop": 'k'}, writes={"fpc": 'k'})
     def _update_fpc(self, k):
         """
         From step k requires: F POP
         """
         self.fpc[k] = self.f[k] / self.pop[k]
 
-    @requires(["ifpc1", "ifpc2", "ifpc"], ["iopc"])
+    @step(reads={"ifpc1": 'k', "ifpc2": 'k', "iopc": 'k', "time": 'k'}, writes={"ifpc": 'k', "ifpc1": 'k', "ifpc2": 'k'})
     def _update_ifpc(self, k):
         """
         From step k requires: IOPC
@@ -642,14 +578,14 @@ class Agriculture:
         self.ifpc[k] = clip(self.ifpc2[k], self.ifpc1[k], self.time[k],
                             self.pyear)
 
-    @requires(["tai"], ["io", "fioaa"])
+    @step(reads={"fioaa": 'k', "io": 'k'}, writes={"tai": 'k'})
     def _update_tai(self, k):
         """
         From step k requires: IO FIOAA
         """
         self.tai[k] = self.io[k] * self.fioaa[k]
 
-    @requires(["fioaa1", "fioaa2", "fioaa"], ["fpc", "ifpc"])
+    @step(reads={"fioaa1": 'k', "fioaa2": 'k', "fpc": 'k', "ifpc": 'k', "time": 'k'}, writes={"fioaa": 'k', "fioaa1": 'k', "fioaa2": 'k'})
     def _update_fioaa(self, k):
         """
         From step k requires: FPC IFPC
@@ -659,21 +595,21 @@ class Agriculture:
         self.fioaa[k] = clip(self.fioaa2[k], self.fioaa1[k], self.time[k],
                              self.pyear)
 
-    @requires(["ldr"], ["tai", "fiald", "dcph"])
+    @step(reads={"dcph": 'k', "fiald": 'k', "tai": 'k'}, writes={"ldr": 'kl'})
     def _update_ldr(self, k, kl):
         """
         From step k requires: TAI FIALD DCPH
         """
         self.ldr[kl] = self.tai[k] * self.fiald[k] / self.dcph[k]
 
-    @requires(["dcph"], ["pal"])
+    @step(reads={"pal": 'k'}, writes={"dcph": 'k'})
     def _update_dcph(self, k):
         """
         From step k requires: PAL
         """
         self.dcph[k] = self.dcph_f(self.pal[k] / self.palt)
 
-    @requires(["cai"], ["tai", "fiald"])
+    @step(reads={"fiald": 'k', "tai": 'k'}, writes={"cai": 'k'})
     def _update_cai(self, k):
         """
         From step k requires: TAI FIALD
@@ -681,14 +617,14 @@ class Agriculture:
         self.cai[k] = self.tai[k] * (1 - self.fiald[k])
 
     # OPTIMIZE checks more than necessary (cai[k] for k>=1)
-    @requires(["ai"], ["cai", "alai"])
+    @step(reads={"alai": 'k', "cai": 'k0'}, writes={"ai": 'k'})
     def _update_ai(self, k):
         """
         From step k=0 requires: CAI, else nothing
         """
         self.ai[k] = self.smooth_cai(k, self.alai[k])
 
-    @requires(["alai"])
+    @step(reads={"time": 'k'}, writes={"alai": 'k'})
     def _update_alai(self, k):
         """
         From step k requires: nothing
@@ -696,28 +632,28 @@ class Agriculture:
         self.alai[k] = clip(self.alai2, self.alai1, self.time[k],
                             self.pyear)
 
-    @requires(["aiph"], ["ai", "falm", "al"])
+    @step(reads={"ai": 'k', "al": 'k', "falm": 'k'}, writes={"aiph": 'k'})
     def _update_aiph(self, k):
         """
         From step k requires: AI FALM AL
         """
         self.aiph[k] = self.ai[k] * (1 - self.falm[k]) / self.al[k]
 
-    @requires(["lymc"], ["aiph"])
+    @step(reads={"aiph": 'k'}, writes={"lymc": 'k'})
     def _update_lymc(self, k):
         """
         From step k requires: AIPH
         """
         self.lymc[k] = self.lymc_f(self.aiph[k])
 
-    @requires(["ly"], ["lyf", "lfert", "lymc", "lymap"])
+    @step(reads={"lfert": 'k', "lyf": 'k', "lymap": 'k', "lymc": 'k'}, writes={"ly": 'k'})
     def _update_ly(self, k):
         """
         From step k requires: LYF LFERT LYMC LYMAP
         """
         self.ly[k] = self.lyf[k] * self.lfert[k] * self.lymc[k] * self.lymap[k]
 
-    @requires(["lyf"])
+    @step(reads={"time": 'k'}, writes={"lyf": 'k'})
     def _update_lyf(self, k):
         """
         From step k requires: nothing
@@ -725,7 +661,7 @@ class Agriculture:
         self.lyf[k] = clip(self.lyf2, self.lyf1, self.time[k],
                            self.pyear)
 
-    @requires(["lymap1", "lymap2", "lymap"], ["io"])
+    @step(reads={"io": 'k', "lymap1": 'k', "lymap2": 'k', "time": 'k'}, writes={"lymap": 'k', "lymap1": 'k', "lymap2": 'k'})
     def _update_lymap(self, k):
         """
         From step k requires: IO
@@ -735,42 +671,42 @@ class Agriculture:
         self.lymap[k] = clip(self.lymap2[k], self.lymap1[k], self.time[k],
                              self.pyear)
 
-    @requires(["fiald"], ["mpld", "mpai"])
+    @step(reads={"mpai": 'k', "mpld": 'k'}, writes={"fiald": 'k'})
     def _update_fiald(self, k):
         """
         From step k requires: MPLD MPAI
         """
         self.fiald[k] = self.fiald_f(self.mpld[k] / self.mpai[k])
 
-    @requires(["mpld"], ["ly", "dcph"])
+    @step(reads={"dcph": 'k', "ly": 'k'}, writes={"mpld": 'k'})
     def _update_mpld(self, k):
         """
         From step k requires: LY DCPH
         """
         self.mpld[k] = self.ly[k] / (self.dcph[k] * self.sd)
 
-    @requires(["mpai"], ["alai", "ly", "mlymc", "lymc"])
+    @step(reads={"alai": 'k', "ly": 'k', "lymc": 'k', "mlymc": 'k'}, writes={"mpai": 'k'})
     def _update_mpai(self, k):
         """
         From step k requires: ALAI LY MLYMC LYMC
         """
         self.mpai[k] = self.alai[k] * self.ly[k] * self.mlymc[k] / self.lymc[k]
 
-    @requires(["mlymc"], ["aiph"])
+    @step(reads={"aiph": 'k'}, writes={"mlymc": 'k'})
     def _update_mlymc(self, k):
         """
         From step k requires: AIPH
         """
         self.mlymc[k] = self.mlymc_f(self.aiph[k])
 
-    @requires(["all"], ["llmy"])
+    @step(reads={"llmy": 'k'}, writes={"all": 'k'})
     def _update_all(self, k):
         """
         From step k requires: LLMY
         """
         self.all[k] = self.alln * self.llmy[k]
 
-    @requires(["llmy1", "llmy2", "llmy"], ["ly"])
+    @step(reads={"llmy1": 'k', "llmy2": 'k', "ly": 'k', "time": 'k'}, writes={"llmy": 'k', "llmy1": 'k', "llmy2": 'k'})
     def _update_llmy(self, k):
         """
         From step k requires: LY
@@ -780,28 +716,28 @@ class Agriculture:
         self.llmy[k] = clip(self.llmy2[k], self.llmy1[k], self.time[k],
                             self.pyear)
 
-    @requires(["ler"], ["al", "all"])
+    @step(reads={"al": 'k', "all": 'k'}, writes={"ler": 'kl'})
     def _update_ler(self, k, kl):
         """
         From step k requires: AL ALL
         """
         self.ler[kl] = self.al[k] / self.all[k]
 
-    @requires(["uilpc"], ["iopc"])
+    @step(reads={"iopc": 'k'}, writes={"uilpc": 'k'})
     def _update_uilpc(self, k):
         """
         From step k requires: IOPC
         """
         self.uilpc[k] = self.uilpc_f(self.iopc[k])
 
-    @requires(["uilr"], ["uilpc", "pop"])
+    @step(reads={"pop": 'k', "uilpc": 'k'}, writes={"uilr": 'k'})
     def _update_uilr(self, k):
         """
         From step k requires: UILPC POP
         """
         self.uilr[k] = self.uilpc[k] * self.pop[k]
 
-    @requires(["lrui"], ["uilr", "uil"])
+    @step(reads={"uil": 'k', "uilr": 'k'}, writes={"lrui": 'kl'})
     def _update_lrui(self, k, kl):
         """
         From step k requires: UILR UIL
@@ -809,63 +745,63 @@ class Agriculture:
         self.lrui[kl] = np.maximum(0,
                                    (self.uilr[k] - self.uil[k]) / self.uildt)
 
-    @requires(["uil"])
+    @step(reads={"lrui": 'jk', "uil": 'j'}, writes={"uil": 'k'})
     def _update_state_uil(self, k, j, jk):
         """
         State variable, requires previous step only
         """
         self.uil[k] = self.uil[j] + self.dt * self.lrui[jk]
 
-    @requires(["lfert"])
+    @step(reads={"lfd": 'jk', "lfert": 'j', "lfr": 'jk'}, writes={"lfert": 'k'})
     def _update_state_lfert(self, k, j, jk):
         """
         State variable, requires previous step only
         """
         self.lfert[k] = self.lfert[j] + self.dt * (self.lfr[jk] - self.lfd[jk])
 
-    @requires(["lfdr"], ["ppolx"])
+    @step(reads={"ppolx": 'k'}, writes={"lfdr": 'k'})
     def _update_lfdr(self, k):
         """
         From step k requires: PPOLX
         """
         self.lfdr[k] = self.lfdr_f(self.ppolx[k])
 
-    @requires(["lfd"], ["lfert", "lfdr"])
+    @step(reads={"lfdr": 'k', "lfert": 'k'}, writes={"lfd": 'kl'})
     def _update_lfd(self, k, kl):
         """
         From step k requires: LFERT LFDR
         """
         self.lfd[kl] = self.lfert[k] * self.lfdr[k]
 
-    @requires(["lfr"], ["lfert", "lfrt"])
+    @step(reads={"lfert": 'k', "lfrt": 'k'}, writes={"lfr": 'kl'})
     def _update_lfr(self, k, kl):
         """
         From step k requires: LFERT LFRT
         """
         self.lfr[kl] = (self.ilf - self.lfert[k]) / self.lfrt[k]
 
-    @requires(["lfrt"], ["falm"])
+    @step(reads={"falm": 'k'}, writes={"lfrt": 'k'})
     def _update_lfrt(self, k):
         """
         From step k requires: FALM
         """
         self.lfrt[k] = self.lfrt_f(self.falm[k])
 
-    @requires(["falm"], ["pfr"])
+    @step(reads={"pfr": 'k'}, writes={"falm": 'k'})
     def _update_falm(self, k):
         """
         From step k requires: PFR
         """
         self.falm[k] = self.falm_f(self.pfr[k])
 
-    @requires(["fr"], ["fpc"])
+    @step(reads={"fpc": 'k'}, writes={"fr": 'k'})
     def _update_fr(self, k):
         """
         From step k requires: FPC
         """
         self.fr[k] = self.fpc[k] / self.sfpc
 
-    @requires(["pfr"], ["fr"], check_after_init=False)
+    @step(reads={"fr": 'k0'}, writes={"pfr": 'k'})
     def _update_pfr(self, k):
         """
         From step k=0 requires: FR, else nothing

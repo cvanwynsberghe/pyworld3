@@ -181,7 +181,7 @@ def test_world3_model(significant_digits=10):
     world3.init_world3_variables()
     world3.set_world3_delay_functions()
     world3.set_world3_table_functions()
-    world3.run_world3(fast=False)
+    world3.run_world3()
 
     vec_computed = [world3.pop[-1],
                     world3.ppol[-1],
@@ -200,13 +200,13 @@ def test_world3_model(significant_digits=10):
                             significant=significant_digits)
 
 
-def test_world3_fast_nocheck(significant_digits=10):
+def test_world3_graph_order(significant_digits=10):
     world3 = World3()
     world3.init_world3_constants()
     world3.init_world3_variables()
     world3.set_world3_delay_functions()
     world3.set_world3_table_functions()
-    world3.run_world3(fast=True)
+    world3.run_world3()
 
     vec_computed = [world3.pop[-1],
                     world3.ppol[-1],

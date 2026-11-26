@@ -32,8 +32,6 @@
 # The fact that you are presently reading this means that you have had
 # knowledge of the CeCILL license and that you accept its terms.
 
-from types import MethodType
-
 from numpy import arange
 
 from .population import Population
@@ -41,6 +39,7 @@ from .capital import Capital
 from .agriculture import Agriculture
 from .pollution import Pollution
 from .resource import Resource
+from .utils import build_execution_order, compile_steps, run_init_loops
 
 
 class World3(Population, Capital, Agriculture, Pollution, Resource):
@@ -192,240 +191,30 @@ class World3(Population, Capital, Agriculture, Pollution, Resource):
         self.set_pollution_table_functions(json_file)
         self.set_resource_table_functions(json_file)
 
-    def run_world3(self, fast=False):
+    def run_world3(self):
         """
         Run a simulation of the World3 instance. One should initialize the
         model first (constants, variables, delay & table functions).
 
-        Parameters
-        ----------
-        fast : boolean, optional
-            If False, run with rescheduling (safe).
-            If True, run with hardcoded fast sequence (unsafe).
-            The default is False.
+        The execution order of the update methods is derived once from the
+        dependency graph declared by the @step decorators (variable and time
+        index of each read and write), then the simulation runs without
+        per-step dependency checks.
 
         """
-        if fast:
-            self._run_world3_fast()
-        else:
-            self._run_world3()
+        # k = 0: initial conditions and rates at year_min (rescheduling,
+        # the model has circular dependencies at k=0)
+        run_init_loops(self, [self.loop0_population, self.loop0_capital,
+                              self.loop0_agriculture, self.loop0_pollution,
+                              self.loop0_resource])
 
-    def _run_world3(self):
-        """
-        Run an unsorted sequence of updates of the 5 sectors, and reschedules
-        each loop computation until all variables are computed.
-
-        """
-        self.redo_loop = True
-        while self.redo_loop:
-            self.redo_loop = False
-            self.loop0_population()
-            self.loop0_capital()
-            self.loop0_agriculture()
-            self.loop0_pollution()
-            self.loop0_resource()
-
+        steps = compile_steps(self, build_execution_order(type(self)))
         for k_ in range(1, self.n):
-            self.redo_loop = True
-            while self.redo_loop:
-                self.redo_loop = False
-                if self.verbose:
-                    print("go loop", k_)
-                self.loopk_population(k_-1, k_, k_-1, k_)
-                self.loopk_capital(k_-1, k_, k_-1, k_)
-                self.loopk_agriculture(k_-1, k_, k_-1, k_)
-                self.loopk_pollution(k_-1, k_, k_-1, k_)
-                self.loopk_resource(k_-1, k_, k_-1, k_)
-
-    def _run_world3_fast(self):
-        """
-        Run a sorted sequence to update the model, with no
-        checking [unsafe].
-
-        The initialization (k=0) still uses the @requires wrappers, because
-        rescheduling is needed there. For k >= 1 the sequence is fixed, so
-        the raw update functions are called directly, skipping the per-step
-        dependency checks of the wrappers.
-
-        """
-        self.redo_loop = True
-        while self.redo_loop:  # unsorted updates at initialization only
-            self.redo_loop = False
-            self.loop0_population()
-            self.loop0_capital()
-            self.loop0_agriculture()
-            self.loop0_pollution()
-            self.loop0_resource()
-
-        shadowed = self._bind_raw_updaters()
-        try:
-            for k_ in range(1, self.n):
-                if self.verbose:
-                    print("go loop", k_)
-                self._loopk_world3_fast(k_-1, k_, k_-1, k_)  # sorted updates
-        finally:
-            for name in shadowed:  # restore wrapped methods on this instance
-                del self.__dict__[name]
-
-    def _bind_raw_updaters(self):
-        """
-        Bind the raw (undecorated) _update_* methods of this instance, so
-        that calls from _loopk_world3_fast skip the @requires wrappers.
-
-        Returns
-        -------
-        list of str
-            Names shadowed on the instance, to restore them afterwards.
-
-        """
-        shadowed = []
-        seen = set()
-        for klass in type(self).__mro__:
-            for name, attr in vars(klass).items():
-                if name.startswith("_update_") and name not in seen:
-                    seen.add(name)
-                    raw = getattr(attr, "__wrapped__", attr)
-                    setattr(self, name, MethodType(raw, self))
-                    shadowed.append(name)
-        return shadowed
-
-    def _loopk_world3_fast(self, j, k, jk, kl):
-        """
-        Run a sorted sequence to update one loop of World3 with
-        no checking and no rescheduling [unsafe].
-
-        """
-        self._update_state_p1(k, j, jk)
-        self._update_state_p2(k, j, jk)
-        self._update_state_p3(k, j, jk)
-        self._update_state_p4(k, j, jk)
-        self._update_pop(k)
-        self._update_fpu(k)
-        self._update_ehspc(k)
-        self._update_lmhs(k)
-        self._update_d(k, jk)
-        self._update_cdr(k)
-        self._update_aiopc(k)
-        self._update_diopc(k)
-        self._update_sfsn(k)
-        self._update_ple(k)
-        self._update_cmple(k)
-        self._update_fcfpc(k)
-        self._update_fce(k)
-        self._update_cbr(k, jk)
-        self._update_lufd(k)
-        self._update_cuf(k)
-        self._update_state_ic(k, j, jk)
-        self._update_alic(k)
-        self._update_icdr(k, kl)
-        self._update_icor(k)
-        self._update_state_sc(k, j, jk)
-        self._update_alsc(k)
-        self._update_scdr(k, kl)
-        self._update_scor(k)
-        self._update_so(k)
-        self._update_sopc(k)
-        self._update_jpscu(k)
-        self._update_pjss(k)
-        self._update_lf(k)
-        self._update_state_al(k, j, jk)
-        self._update_state_pal(k, j, jk)
-        self._update_state_uil(k, j, jk)
-        self._update_state_lfert(k, j, jk)
-        self._update_lfc(k)
-        self._update_dcph(k)
-        self._update_alai(k)
-        self._update_ai(k)
-        self._update_pfr(k)
-        self._update_falm(k)
-        self._update_aiph(k)
-        self._update_lymc(k)
-        self._update_lyf(k)
-        self._update_lfrt(k)
-        self._update_state_ppol(k, j, jk)
-        self._update_ppolx(k)
-        self._update_ppgao(k)
-        self._update_ppgf(k)
-        self._update_pptd(k)
-        self._update_ppapr(k, kl)
-        self._update_ahlm(k)
-        self._update_ahl(k)
-        self._update_ppasr(k, kl)
-        self._update_state_nr(k, j, jk)
-        self._update_nrfr(k)
-        self._update_fcaor(k)
-        self._update_nruf(k)
-        self._update_lmp(k)
-        self._update_hsapc(k)
-        self._update_io(k)
-        self._update_iopc(k)
-        self._update_fioac(k)
-        self._update_isopc(k)
-        self._update_fioas(k)
-        self._update_scir(k, kl)
-        self._update_jpicu(k)
-        self._update_pjis(k)
-        self._update_jph(k)
-        self._update_pjas(k)
-        self._update_j(k)
-        self._update_luf(k)
-        self._update_ifpc(k)
-        self._update_mlymc(k)
-        self._update_lymap(k)
-        self._update_lfdr(k)
-        self._update_lfd(k, kl)
-        self._update_ly(k)
-        self._update_llmy(k)
-        self._update_uilpc(k)
-        self._update_uilr(k)
-        self._update_lrui(k, kl)
-        self._update_lfr(k, kl)
-        self._update_pcrum(k)
-        self._update_nrur(k, kl)
-        self._update_cmi(k)
-        self._update_lmc(k)
-        self._update_fie(k)
-        self._update_frsn(k)
-        self._update_dcfs(k)
-        self._update_dtf(k)
-        self._update_f(k)
-        self._update_fpc(k)
-        self._update_fioaa(k)
-        self._update_tai(k)
-        self._update_mpai(k)
-        self._update_mpld(k)
-        self._update_fiald(k)
-        self._update_ldr(k, kl)
-        self._update_cai(k)
-        self._update_fr(k)
-        self._update_all(k)
-        self._update_ler(k, kl)
-        self._update_ppgio(k)
-        self._update_ppgr(k, kl)
-        self._update_lmf(k)
-        self._update_le(k)
-        self._update_m1(k)
-        self._update_m2(k)
-        self._update_m3(k)
-        self._update_m4(k)
-        self._update_mat1(k, kl)
-        self._update_mat2(k, kl)
-        self._update_mat3(k, kl)
-        self._update_d1(k, kl)
-        self._update_d2(k, kl)
-        self._update_d3(k, kl)
-        self._update_d4(k, kl)
-        self._update_fm(k)
-        self._update_mtf(k)
-        self._update_nfc(k)
-        self._update_fsafc(k)
-        self._update_fcapc(k)
-        self._update_tf(k)
-        self._update_b(k, kl)
-        self._update_fioai(k)
-        self._update_icir(k, kl)
-
-
+            if self.verbose:
+                print("go loop", k_)
+            j = k_ - 1
+            for fn in steps:
+                fn(k_, j, j, k_)
 
 
 def hello_world3():
@@ -443,7 +232,7 @@ def hello_world3():
     world3.init_world3_variables()
     world3.set_world3_table_functions()
     world3.set_world3_delay_functions()
-    world3.run_world3(fast=True)
+    world3.run_world3()
 
     plot_world_variables(world3.time,
                          [world3.nrfr, world3.iopc, world3.fpc, world3.pop,
