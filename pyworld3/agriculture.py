@@ -241,7 +241,7 @@ class Agriculture:
         self.dt = dt
         self.year_min = year_min
         self.year_max = year_max
-        self.verbose = False
+        self.verbose = verbose
         self.length = self.year_max - self.year_min
         self.n = int(self.length / self.dt)
         self.time = np.arange(self.year_min, self.year_max, self.dt)

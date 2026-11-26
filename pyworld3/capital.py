@@ -187,7 +187,7 @@ class Capital:
         self.length = self.year_max - self.year_min
         self.n = int(self.length / self.dt)
         self.time = np.arange(self.year_min, self.year_max, self.dt)
-        self.verbose = False
+        self.verbose = verbose
 
     def init_capital_constants(self, ici=2.1e11, sci=1.44e11, iet=4000,
                                iopcd=400, lfpf=0.75, lufdt=2, icor1=3, icor2=3,

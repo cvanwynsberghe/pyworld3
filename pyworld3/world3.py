@@ -102,7 +102,7 @@ class World3(Population, Capital, Agriculture, Pollution, Resource):
         self.length = self.year_max - self.year_min
         self.n = int(self.length / self.dt) + 1
         self.time = arange(self.year_min, self.year_max + self.dt, self.dt)
-        self.verbose = False
+        self.verbose = verbose
 
     def init_world3_constants(self, p1i=65e7, p2i=70e7, p3i=19e7, p4i=6e7,
                               dcfsn=4, fcest=4000, hsid=20, ieat=3, len=28,
