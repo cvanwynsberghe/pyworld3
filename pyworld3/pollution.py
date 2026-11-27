@@ -35,11 +35,11 @@
 import os
 import json
 
-from scipy.interpolate import interp1d
 import numpy as np
 
-from .specials import Dlinf3, clip, switch, Delay3
-from .utils import requires
+from .specials import TableFunction, Dlinf3, clip, switch, Delay3
+from .utils import (build_execution_order, compile_steps,
+                     run_init_loops, step)
 
 
 class Pollution:
@@ -227,10 +227,7 @@ class Pollution:
         for func_name in func_names:
             for table in tables:
                 if table["y.name"] == func_name:
-                    func = interp1d(table["x.values"], table["y.values"],
-                                    bounds_error=False,
-                                    fill_value=(table["y.values"][0],
-                                                table["y.values"][-1]))
+                    func = TableFunction(table["x.values"], table["y.values"])
                     setattr(self, func_name.lower()+"_f", func)
 
     def init_exogenous_inputs(self):
@@ -288,10 +285,7 @@ class Pollution:
                     x_0_to_30,
                     x_0_to_30]
         for func_name, x_vals, y_vals in zip(func_names, x_values, y_values):
-            func = interp1d(x_vals, y_vals,
-                            bounds_error=False,
-                            fill_value=(y_vals[0],
-                                        y_vals[-1]))
+            func = TableFunction(x_vals, y_vals)
             setattr(self, func_name.lower()+"_f", func)
         # Delays
         var_dlinf3 = ["PCTI", "LMP"]
@@ -300,11 +294,11 @@ class Pollution:
                                 self.dt, self.time, method="euler")
             setattr(self, "dlinf3_"+var_.lower(), func_delay)
 
+    @step(reads={"lfdr1": 'k', "lfdr2": 'k', "lmp1": 'k', "lmp2": 'k', "pctcm": 'k', "pcti": ['j', 'k'], "pctir": 'jk', "plmp": 'k', "ppgf22": 'k', "ppolx": 'k', "time": 'k'}, writes={"aiph": 'k', "al": 'k', "lfdr": 'k', "lfdr1": 'k', "lfdr2": 'k', "lmp": 'k', "lmp1": 'k', "lmp2": 'k', "pcrum": 'k', "pctcm": 'k', "pcti": 'k', "pctir": 'kl', "plmp": 'k', "pop": 'k', "ppgf22": 'k'})
     def loopk_exogenous(self, k):
         """
         Run a sorted sequence to update one loop of the exogenous parameters.
-        `@requires` decorator checks that all dependencies are computed
-        previously.
+        The updates follow the @step dependency graph order.
 
         """
         j = k - 1
@@ -369,7 +363,9 @@ class Pollution:
 
     def loop0_pollution(self, alone=False):
         """
-        Run a sequence to initialize the pollution sector (loop with k=0).
+        Set the initial conditions of the sector at k=0; the
+        _update_* methods are then run by run_init_loops in the
+        k=0 execution order generated from the @step graph.
 
         Parameters
         ----------
@@ -379,64 +375,27 @@ class Pollution:
 
         """
         self.ppol[0] = self.ppoli
-        self._update_ppolx(0)
         if alone:
             self.loop0_exogenous()  # EXOGENOUS HERE
-        self._update_ppgio(0)
-        self._update_ppgao(0)
-        self._update_ppgf(0)
-        self._update_ppgr(0, 0)
-        self._update_pptd(0)
-        self._update_ppapr(0, 0)
-        self._update_ahlm(0)
-        self._update_ahl(0)
-        self._update_ppasr(0, 0)
-
-    def loopk_pollution(self, j, k, jk, kl, alone=False):
-        """
-        Run a sequence to update one loop of the pollution sector.
-
-        Parameters
-        ----------
-        alone : boolean, optional
-            if True, run the sector alone with exogenous inputs. The default
-            is False.
-
-        """
-        self._update_state_ppol(k, j, jk)
-        self._update_ppolx(k)
-        if alone:
-            self.loopk_exogenous(k)
-        self._update_ppgio(k)
-        self._update_ppgao(k)
-        self._update_ppgf(k)
-        self._update_ppgr(k, kl)
-        self._update_pptd(k)
-        self._update_ppapr(k, kl)
-        self._update_ahlm(k)
-        self._update_ahl(k)
-        self._update_ppasr(k, kl)
 
     def run_pollution(self):
         """
-        Run a sequence of updates to simulate the pollution sector alone with
-        exogenous inputs.
+        Run the pollution sector alone with exogenous inputs. Initialization
+        (k=0) reschedules until all reads are known; for k >= 1 the updates
+        (including the exogenous ones) follow the topological order of the
+        @step dependency graph.
 
         """
-        self.redo_loop = True
-        while self.redo_loop:
-            self.redo_loop = False
-            self.loop0_pollution(alone=True)
-
+        run_init_loops(self, [lambda: self.loop0_pollution(alone=True)])
+        steps = compile_steps(self, build_execution_order(type(self)))
         for k_ in range(1, self.n):
-            self.redo_loop = True
-            while self.redo_loop:
-                self.redo_loop = False
-                if self.verbose:
-                    print("go loop", k_)
-                self.loopk_pollution(k_-1, k_, k_-1, k_, alone=True)
+            if self.verbose:
+                print("go loop", k_)
+            j = k_ - 1
+            for fn in steps:
+                fn(k_, j, j, k_)
 
-    @requires(["ppol"])
+    @step(reads={"ppapr": 'jk', "ppasr": 'jk', "ppol": 'j'}, writes={"ppol": 'k'})
     def _update_state_ppol(self, k, j, jk):
         """
         State variable, requires previous step only
@@ -444,14 +403,14 @@ class Pollution:
         self.ppol[k] = self.ppol[j] + self.dt * (self.ppapr[jk] -
                                                  self.ppasr[jk])
 
-    @requires(["ppolx"], ["ppol"])
+    @step(reads={"ppol": 'k'}, writes={"ppolx": 'k'})
     def _update_ppolx(self, k):
         """
         From step k requires: PPOL
         """
         self.ppolx[k] = self.ppol[k] / self.ppol70
 
-    @requires(["ppgio"], ["pcrum", "pop"])
+    @step(reads={"pcrum": 'k', "pop": 'k'}, writes={"ppgio": 'k'})
     def _update_ppgio(self, k):
         """
         From step k requires: PCRUM POP
@@ -459,14 +418,14 @@ class Pollution:
         self.ppgio[k] = (self.pcrum[k] * self.pop[k] * self.frpm *
                          self.imef * self.imti)
 
-    @requires(["ppgao"], ["aiph", "al"])
+    @step(reads={"aiph": 'k', "al": 'k'}, writes={"ppgao": 'k'})
     def _update_ppgao(self, k):
         """
         From step k requires: AIPH AL
         """
         self.ppgao[k] = self.aiph[k] * self.al[k] * self.fipm * self.amti
 
-    @requires(["ppgf"])
+    @step(reads={"time": 'k'}, writes={"ppgf": 'k'})
     def _update_ppgf(self, k):
         """
         From step k requires: PPGF22
@@ -475,21 +434,21 @@ class Pollution:
         self.ppgf[k] = clip(self.ppgf2, self.ppgf1, self.time[k],
                             self.pyear)
 
-    @requires(["ppgr"], ["ppgio", "ppgao", "ppgf"])
+    @step(reads={"ppgao": 'k', "ppgf": 'k', "ppgio": 'k'}, writes={"ppgr": 'kl'})
     def _update_ppgr(self, k, kl):
         """
         From step k requires: PPGIO PPGAO PPGF
         """
         self.ppgr[kl] = (self.ppgio[k] + self.ppgao[k]) * self.ppgf[k]
 
-    @requires(["pptd"])
+    @step(reads={"time": 'k'}, writes={"pptd": 'k'})
     def _update_pptd(self, k):
         """
         From step k requires: nothing
         """
         self.pptd[k] = clip(self.pptd2, self.pptd1, self.time[k], self.pyear)
 
-    @requires(["ppapr"], ["ppgr"], check_after_init=False)
+    @step(reads={"ppgr": 'k0', "pptd": 'k'}, writes={"ppapr": 'kl'})
     def _update_ppapr(self, k, kl):
         """
         From step k=0 requires: PPGR, else nothing
@@ -497,21 +456,21 @@ class Pollution:
         # !!! is originally ppgr[jk] rather than ppgr[k]
         self.ppapr[kl] = self.delay3_ppgr(k, self.pptd[k])
 
-    @requires(["ahlm"], ["ppolx"])
+    @step(reads={"ppolx": 'k'}, writes={"ahlm": 'k'})
     def _update_ahlm(self, k):
         """
         From step k requires: PPOLX
         """
         self.ahlm[k] = self.ahlm_f(self.ppolx[k])
 
-    @requires(["ahl"], ["ahlm"])
+    @step(reads={"ahlm": 'k'}, writes={"ahl": 'k'})
     def _update_ahl(self, k):
         """
         From step k requires: AHLM
         """
         self.ahl[k] = self.ahlm[k] * self.ahl70
 
-    @requires(["ppasr"], ["ahl", "ppol"])
+    @step(reads={"ahl": 'k', "ppol": 'k'}, writes={"ppasr": 'kl'})
     def _update_ppasr(self, k, kl):
         """
         From step k requires: AHL PPOL

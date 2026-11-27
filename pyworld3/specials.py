@@ -33,7 +33,44 @@
 # knowledge of the CeCILL license and that you accept its terms.
 
 import numpy as np
+from bisect import bisect_right
 from scipy.integrate import odeint
+
+
+class TableFunction:
+    """
+    Piecewise-linear lookup table. Drop-in replacement for
+    `scipy.interpolate.interp1d(x, y, bounds_error=False,
+    fill_value=(y[0], y[-1]))` on scalar inputs, but much faster per call
+    (no array validation overhead). NaN inputs propagate to NaN, as with
+    interp1d.
+
+    Parameters
+    ----------
+    x_values : list of float
+        Abscissa of the table knots (sorted ascending).
+    y_values : list of float
+        Ordinate of the table knots.
+
+    """
+
+    def __init__(self, x_values, y_values):
+        pairs = sorted(zip(x_values, y_values))
+        self._x = [float(x) for x, _ in pairs]
+        self._y = np.asarray([y for _, y in pairs], dtype=float)
+
+    def __call__(self, x):
+        if x != x:  # NaN propagates, like interp1d
+            return np.nan
+        x_tab = self._x
+        i = bisect_right(x_tab, x)
+        if i == 0:
+            return self._y[0]
+        if i >= len(x_tab):
+            return self._y[-1]
+        x0, x1 = x_tab[i - 1], x_tab[i]
+        y = self._y
+        return y[i - 1] + (y[i] - y[i - 1]) * (x - x0) / (x1 - x0)
 
 
 def switch(var1, var2, boolean_switch):

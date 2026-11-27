@@ -35,11 +35,11 @@
 import os
 import json
 
-from scipy.interpolate import interp1d
 import numpy as np
 
-from .specials import Smooth, clip
-from .utils import requires
+from .specials import TableFunction, Smooth, clip
+from .utils import (build_execution_order, compile_steps,
+                     run_init_loops, step)
 
 
 class Capital:
@@ -187,7 +187,7 @@ class Capital:
         self.length = self.year_max - self.year_min
         self.n = int(self.length / self.dt)
         self.time = np.arange(self.year_min, self.year_max, self.dt)
-        self.verbose = False
+        self.verbose = verbose
 
     def init_capital_constants(self, ici=2.1e11, sci=1.44e11, iet=4000,
                                iopcd=400, lfpf=0.75, lufdt=2, icor1=3, icor2=3,
@@ -305,10 +305,7 @@ class Capital:
         for func_name in func_names:
             for table in tables:
                 if table["y.name"] == func_name:
-                    func = interp1d(table["x.values"], table["y.values"],
-                                    bounds_error=False,
-                                    fill_value=(table["y.values"][0],
-                                                table["y.values"][-1]))
+                    func = TableFunction(table["x.values"], table["y.values"])
                     setattr(self, func_name.lower()+"_f", func)
 
     def init_exogenous_inputs(self):
@@ -345,17 +342,14 @@ class Capital:
         x_values = [x_to_2100, x_to_2100, x_to_2000, x_to_2000, x_to_2000]
 
         for func_name, x_vals, y_vals in zip(func_names, x_values, y_values):
-            func = interp1d(x_vals, y_vals,
-                            bounds_error=False,
-                            fill_value=(y_vals[0],
-                                        y_vals[-1]))
+            func = TableFunction(x_vals, y_vals)
             setattr(self, func_name.lower()+"_f", func)
 
+    @step(reads={"pop": 'k', "time": 'k'}, writes={"aiph": 'k', "al": 'k', "fcaor": 'k', "fioaa": 'k', "p2": 'k', "p3": 'k', "pop": 'k'})
     def loopk_exogenous(self, k):
         """
         Run a sorted sequence to update one loop of the exogenous parameters.
-        `@requires` decorator checks that all dependencies are computed
-        previously.
+        The updates follow the @step dependency graph order.
 
         """
         self.aiph[k] = self.aiph_f(self.time[k])
@@ -375,7 +369,9 @@ class Capital:
 
     def loop0_capital(self, alone=False):
         """
-        Run a sequence to initialize the capital sector (loop with k=0).
+        Set the initial conditions of the sector at k=0; the
+        _update_* methods are then run by run_init_loops in the
+        k=0 execution order generated from the @step graph.
 
         Parameters
         ----------
@@ -390,120 +386,39 @@ class Capital:
         self.ic[0] = self.ici
         self.sc[0] = self.sci
         self.cuf[0] = 1.
-        # industrial subsector
-        self._update_alic(0)
-        self._update_icdr(0, 0)
-        self._update_icor(0)
-        self._update_io(0)
-        self._update_iopc(0)
-        self._update_fioac(0)
-        # service subsector
-        self._update_isopc(0)
-        self._update_alsc(0)
-        self._update_scdr(0, 0)
-        self._update_scor(0)
-        self._update_so(0)
-        self._update_sopc(0)
-        self._update_fioas(0)
-        self._update_scir(0, 0)
-        # back to industrial sector
-        self._update_fioai(0)
-        self._update_icir(0, 0)
-        # back to job subsector
-        self._update_jpicu(0)
-        self._update_pjis(0)
-        self._update_jpscu(0)
-        self._update_pjss(0)
-        self._update_jph(0)
-        self._update_pjas(0)
-        self._update_j(0)
-        self._update_lf(0)
-        self._update_luf(0)
-        self._update_lufd(0)
-        # recompute supplementary initial conditions
-        self._update_cuf(0)
-
-    def loopk_capital(self, j, k, jk, kl, alone=False):
-        """
-        Run a sequence to update one loop of the capital sector.
-
-        Parameters
-        ----------
-        alone : boolean, optional
-            if True, run the sector alone with exogenous inputs. The default
-            is False.
-
-        """
-        if alone:
-            self.loopk_exogenous(k)
-        # job subsector
-        self._update_lufd(k)
-        self._update_cuf(k)
-        # industrial subsector
-        self._update_state_ic(k, j, jk)
-        self._update_alic(k)
-        self._update_icdr(k, kl)
-        self._update_icor(k)
-        self._update_io(k)
-        self._update_iopc(k)
-        self._update_fioac(k)
-        # service subsector
-        self._update_state_sc(k, j, jk)
-        self._update_isopc(k)
-        self._update_alsc(k)
-        self._update_scdr(k, kl)
-        self._update_scor(k)
-        self._update_so(k)
-        self._update_sopc(k)
-        self._update_fioas(k)
-        self._update_scir(k, kl)
-        # back to industrial sector
-        self._update_fioai(k)
-        self._update_icir(k, kl)
-        # back to job subsector
-        self._update_jpicu(k)
-        self._update_pjis(k)
-        self._update_jpscu(k)
-        self._update_pjss(k)
-        self._update_jph(k)
-        self._update_pjas(k)
-        self._update_j(k)
-        self._update_lf(k)
-        self._update_luf(k)
 
     def run_capital(self):
         """
-        Run a sequence of updates to simulate the capital sector alone with
-        exogenous inputs.
+        Run the capital sector alone with exogenous inputs. Initialization
+        (k=0) reschedules until all reads are known; for k >= 1 the updates
+        (including the exogenous ones) follow the topological order of the
+        @step dependency graph.
 
         """
-        self.redo_loop = True
-        while self.redo_loop:
-            self.redo_loop = False
-            self.loop0_capital(alone=True)
+        run_init_loops(self, [lambda: self.loop0_capital(alone=True)])
+        steps = compile_steps(self, build_execution_order(type(self)))
         for k_ in range(1, self.n):
-            self.redo_loop = True
-            while self.redo_loop:
-                self.redo_loop = False
-                if self.verbose:
-                    print("go loop", k_)
-                self.loopk_capital(k_-1, k_, k_-1, k_, alone=True)
+            if self.verbose:
+                print("go loop", k_)
+            j = k_ - 1
+            for fn in steps:
+                fn(k_, j, j, k_)
 
-    @requires(["lufd"], ["luf"], check_after_init=False)
+    @step(reads={"luf": 'k0'}, writes={"lufd": 'k'})
     def _update_lufd(self, k):
         """
         From step k=0 requires: LUF, else nothing
         """
         self.lufd[k] = self.smooth_luf(k, self.lufdt)
 
-    @requires(["cuf"], ["lufd"])
+    @step(reads={"lufd": 'k'}, writes={"cuf": 'k'})
     def _update_cuf(self, k):
         """
         From step k requires: LUFD
         """
         self.cuf[k] = self.cuf_f(self.lufd[k])
 
-    @requires(["ic"])
+    @step(reads={"ic": 'j', "icdr": 'jk', "icir": 'jk'}, writes={"ic": 'k'})
     def _update_state_ic(self, k, j, jk):
         """
         State variable, requires previous step only
@@ -513,28 +428,28 @@ class Capital:
         else:
             self.ic[k] = self.ic[j] + self.dt * (self.icir[jk] - self.icdr[jk])
 
-    @requires(["alic"])
+    @step(reads={"time": 'k'}, writes={"alic": 'k'})
     def _update_alic(self, k):
         """
         From step k requires: nothing
         """
         self.alic[k] = clip(self.alic2, self.alic1, self.time[k], self.pyear)
 
-    @requires(["icdr"], ["ic", "alic"])
+    @step(reads={"alic": 'k', "ic": 'k'}, writes={"icdr": 'kl'})
     def _update_icdr(self, k, kl):
         """
         From step k requires: IC ALIC
         """
         self.icdr[kl] = self.ic[k] / self.alic[k]
 
-    @requires(["icor"])
+    @step(reads={"time": 'k'}, writes={"icor": 'k'})
     def _update_icor(self, k):
         """
         From step k requires: nothing
         """
         self.icor[k] = clip(self.icor2, self.icor1, self.time[k], self.pyear)
 
-    @requires(["io"], ["ic", "fcaor", "cuf", "icor"])
+    @step(reads={"cuf": 'k', "fcaor": 'k', "ic": 'k', "icor": 'k'}, writes={"io": 'k'})
     def _update_io(self, k):
         """
         From step k requires: IC FCAOR CUF ICOR
@@ -542,14 +457,14 @@ class Capital:
         self.io[k] = (self.ic[k] * (1 - self.fcaor[k]) * self.cuf[k] /
                       self.icor[k])
 
-    @requires(["iopc"], ["io", "pop"])
+    @step(reads={"io": 'k', "pop": 'k'}, writes={"iopc": 'k'})
     def _update_iopc(self, k):
         """
         From step k requires: IO POP
         """
         self.iopc[k] = self.io[k] / self.pop[k]
 
-    @requires(["fioacv", "fioacc", "fioac"], ["iopc"])
+    @step(reads={"fioacc": 'k', "fioacv": 'k', "iopc": 'k', "time": 'k'}, writes={"fioac": 'k', "fioacc": 'k', "fioacv": 'k'})
     def _update_fioac(self, k):
         """
         From step k requires: IOPC
@@ -560,7 +475,7 @@ class Capital:
         self.fioac[k] = clip(self.fioacv[k], self.fioacc[k], self.time[k],
                              self.iet)
 
-    @requires(["sc"])
+    @step(reads={"sc": 'j', "scdr": 'jk', "scir": 'jk'}, writes={"sc": 'k'})
     def _update_state_sc(self, k, j, jk):
         """
         State variable, requires previous step only
@@ -570,7 +485,7 @@ class Capital:
         else:
             self.sc[k] = self.sc[j] + self.dt * (self.scir[jk] - self.scdr[jk])
 
-    @requires(["isopc1", "isopc2", "isopc"], ["iopc"])
+    @step(reads={"iopc": 'k', "isopc1": 'k', "isopc2": 'k', "time": 'k'}, writes={"isopc": 'k', "isopc1": 'k', "isopc2": 'k'})
     def _update_isopc(self, k):
         """
         From step k requires: IOPC
@@ -580,42 +495,42 @@ class Capital:
         self.isopc[k] = clip(self.isopc2[k], self.isopc1[k], self.time[k],
                              self.pyear)
 
-    @requires(["alsc"])
+    @step(reads={"time": 'k'}, writes={"alsc": 'k'})
     def _update_alsc(self, k):
         """
         From step k requires: nothing
         """
         self.alsc[k] = clip(self.alsc2, self.alsc1, self.time[k], self.pyear)
 
-    @requires(["scdr"], ["sc", "alsc"])
+    @step(reads={"alsc": 'k', "sc": 'k'}, writes={"scdr": 'kl'})
     def _update_scdr(self, k, kl):
         """
         From step k requires: SC ALSC
         """
         self.scdr[kl] = self.sc[k] / self.alsc[k]
 
-    @requires(["scor"])
+    @step(reads={"time": 'k'}, writes={"scor": 'k'})
     def _update_scor(self, k):
         """
         From step k requires: nothing
         """
         self.scor[k] = clip(self.scor2, self.scor1, self.time[k], self.pyear)
 
-    @requires(["so"], ["sc", "cuf", "scor"])
+    @step(reads={"cuf": 'k', "sc": 'k', "scor": 'k'}, writes={"so": 'k'})
     def _update_so(self, k):
         """
         From step k requires: SC CUF SCOR
         """
         self.so[k] = self.sc[k] * self.cuf[k] / self.scor[k]
 
-    @requires(["sopc"], ["so", "pop"])
+    @step(reads={"pop": 'k', "so": 'k'}, writes={"sopc": 'k'})
     def _update_sopc(self, k):
         """
         From step k requires: SO POP
         """
         self.sopc[k] = self.so[k] / self.pop[k]
 
-    @requires(["fioas1", "fioas2", "fioas"], ["sopc", "isopc"])
+    @step(reads={"fioas1": 'k', "fioas2": 'k', "isopc": 'k', "sopc": 'k', "time": 'k'}, writes={"fioas": 'k', "fioas1": 'k', "fioas2": 'k'})
     def _update_fioas(self, k):
         """
         From step k requires: SOPC ISOPC
@@ -625,84 +540,84 @@ class Capital:
         self.fioas[k] = clip(self.fioas2[k], self.fioas1[k], self.time[k],
                              self.pyear)
 
-    @requires(["scir"], ["io", "fioas"])
+    @step(reads={"fioas": 'k', "io": 'k'}, writes={"scir": 'kl'})
     def _update_scir(self, k, kl):
         """
         From step k requires: IO FIOAS
         """
         self.scir[kl] = self.io[k] * self.fioas[k]
 
-    @requires(["fioai"], ["fioaa", "fioas", "fioac"])
+    @step(reads={"fioaa": 'k', "fioac": 'k', "fioas": 'k'}, writes={"fioai": 'k'})
     def _update_fioai(self, k):
         """
         From step k requires: FIOAA FIOAS FIOAC
         """
         self.fioai[k] = (1 - self.fioaa[k] - self.fioas[k] - self.fioac[k])
 
-    @requires(["icir"], ["io", "fioai"])
+    @step(reads={"fioai": 'k', "io": 'k'}, writes={"icir": 'kl'})
     def _update_icir(self, k, kl):
         """
         From step k requires: IO FIOAI
         """
         self.icir[kl] = self.io[k] * self.fioai[k]
 
-    @requires(["jpicu"], ["iopc"])
+    @step(reads={"iopc": 'k'}, writes={"jpicu": 'k'})
     def _update_jpicu(self, k):
         """
         From step k requires: IOPC
         """
         self.jpicu[k] = self.jpicu_f(self.iopc[k])
 
-    @requires(["pjis"], ["ic", "jpicu"])
+    @step(reads={"ic": 'k', "jpicu": 'k'}, writes={"pjis": 'k'})
     def _update_pjis(self, k):
         """
         From step k requires: IC JPICU
         """
         self.pjis[k] = self.ic[k] * self.jpicu[k]
 
-    @requires(["jpscu"], ["sopc"])
+    @step(reads={"sopc": 'k'}, writes={"jpscu": 'k'})
     def _update_jpscu(self, k):
         """
         From step k requires: SOPC
         """
         self.jpscu[k] = self.jpscu_f(self.sopc[k])
 
-    @requires(["pjss"], ["sc", "jpscu"])
+    @step(reads={"jpscu": 'k', "sc": 'k'}, writes={"pjss": 'k'})
     def _update_pjss(self, k):
         """
         From step k requires: SC JPSCU
         """
         self.pjss[k] = self.sc[k] * self.jpscu[k]
 
-    @requires(["jph"], ["aiph"])
+    @step(reads={"aiph": 'k'}, writes={"jph": 'k'})
     def _update_jph(self, k):
         """
         From step k requires: AIPH
         """
         self.jph[k] = self.jph_f(self.aiph[k])
 
-    @requires(["pjas"], ["jph", "al"])
+    @step(reads={"al": 'k', "jph": 'k'}, writes={"pjas": 'k'})
     def _update_pjas(self, k):
         """
         From step k requires: JPH AL
         """
         self.pjas[k] = self.jph[k] * self.al[k]
 
-    @requires(["j"], ["pjis", "pjas", "pjss"])
+    @step(reads={"pjas": 'k', "pjis": 'k', "pjss": 'k'}, writes={"j": 'k'})
     def _update_j(self, k):
         """
         From step k requires: PJIS PJAS PJSS
         """
         self.j[k] = self.pjis[k] + self.pjas[k] + self.pjss[k]
 
-    @requires(["lf"], ["p2", "p3"])
+    @step(reads={"p2": 'k', "p3": 'k'}, writes={"lf": 'k'})
     def _update_lf(self, k):
         """
         From step k requires: P2 P3
         """
         self.lf[k] = (self.p2[k] + self.p3[k]) * self.lfpf
 
-    @requires(["luf"], ["j", "lf"])
+    @step(reads={"j": 'k', "lf": 'k'}, writes={"luf": 'k'})
     def _update_luf(self, k):
         """
         From step k requires: J LF
